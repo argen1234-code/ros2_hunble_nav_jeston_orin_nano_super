@@ -44,4 +44,10 @@ install(PROGRAMS
   RENAME cmd_vel_sender
 )
 
+install(PROGRAMS
+  scripts/virtual_goal_publisher.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME virtual_goal_publisher
+)
+
 ament_package()
