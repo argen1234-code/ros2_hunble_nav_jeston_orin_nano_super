@@ -38,4 +38,10 @@ install(PROGRAMS
   RENAME cmd_vel_watch
 )
 
+install(PROGRAMS
+  scripts/cmd_vel_sender.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME cmd_vel_sender
+)
+
 ament_package()

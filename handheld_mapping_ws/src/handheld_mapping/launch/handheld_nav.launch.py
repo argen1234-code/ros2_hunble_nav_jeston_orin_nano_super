@@ -29,6 +29,8 @@ def generate_launch_description():
     # ── Launch arguments ──────────────────────────────────────────────
     lidar_model = LaunchConfiguration('lidar_model')
     lidar_port = LaunchConfiguration('lidar_port')
+    stm32_port = LaunchConfiguration('stm32_port')
+    stm32_baud = LaunchConfiguration('stm32_baud')
     use_rviz = LaunchConfiguration('use_rviz')
 
     declare_lidar_model = DeclareLaunchArgument(
@@ -38,6 +40,14 @@ def generate_launch_description():
     declare_lidar_port = DeclareLaunchArgument(
         'lidar_port', default_value='/dev/ttyUSB0',
         description='LiDAR serial port')
+
+    declare_stm32_port = DeclareLaunchArgument(
+        'stm32_port', default_value='/dev/ttyACM0',
+        description='STM32 virtual COM port')
+
+    declare_stm32_baud = DeclareLaunchArgument(
+        'stm32_baud', default_value='115200',
+        description='STM32 serial baudrate')
 
     declare_use_rviz = DeclareLaunchArgument(
         'use_rviz', default_value='true',
@@ -155,7 +165,19 @@ def generate_launch_description():
         parameters=[nav2_params_file],
     )
 
-    # ── 6. cmd_vel monitor ──────────────────────────────────────────
+    # ── 6. cmd_vel → STM32 serial forwarder ───────────────────────────
+    cmd_vel_sender = Node(
+        package='handheld_mapping',
+        executable='cmd_vel_sender',
+        name='cmd_vel_sender',
+        output='screen',
+        parameters=[{
+            'port': stm32_port,
+            'baudrate': stm32_baud,
+        }],
+    )
+
+    # ── 7. cmd_vel monitor ──────────────────────────────────────────
     cmd_vel_monitor = Node(
         package='handheld_mapping',
         executable='cmd_vel_monitor',
@@ -163,7 +185,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── 7. RViz2 ────────────────────────────────────────────────────
+    # ── 8. RViz2 ────────────────────────────────────────────────────
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -178,6 +200,8 @@ def generate_launch_description():
     return LaunchDescription([
         declare_lidar_model,
         declare_lidar_port,
+        declare_stm32_port,
+        declare_stm32_baud,
         declare_use_rviz,
         ydlidar_node,
         tf_base_laser,
@@ -190,6 +214,7 @@ def generate_launch_description():
         bt_navigator_node,
         waypoint_node,
         lifecycle_nav_node,
+        cmd_vel_sender,
         cmd_vel_monitor,
         rviz_node,
     ])
