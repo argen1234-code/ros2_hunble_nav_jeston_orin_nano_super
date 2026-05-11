@@ -31,6 +31,7 @@ def generate_launch_description():
     lidar_port = LaunchConfiguration('lidar_port')
     stm32_port = LaunchConfiguration('stm32_port')
     stm32_baud = LaunchConfiguration('stm32_baud')
+    lookahead = LaunchConfiguration('lookahead')
     use_rviz = LaunchConfiguration('use_rviz')
 
     declare_lidar_model = DeclareLaunchArgument(
@@ -48,6 +49,10 @@ def generate_launch_description():
     declare_stm32_baud = DeclareLaunchArgument(
         'stm32_baud', default_value='115200',
         description='STM32 serial baudrate')
+
+    declare_lookahead = DeclareLaunchArgument(
+        'lookahead', default_value='2.0',
+        description='Virtual goal lookahead distance (metres)')
 
     declare_use_rviz = DeclareLaunchArgument(
         'use_rviz', default_value='true',
@@ -165,7 +170,18 @@ def generate_launch_description():
         parameters=[nav2_params_file],
     )
 
-    # ── 6. cmd_vel → STM32 serial forwarder ───────────────────────────
+    # ── 6. Virtual goal publisher (continuous carrot) ──────────────────
+    virtual_goal_node = Node(
+        package='handheld_mapping',
+        executable='virtual_goal_publisher',
+        name='virtual_goal_publisher',
+        output='screen',
+        parameters=[{
+            'lookahead_distance': lookahead,
+        }],
+    )
+
+    # ── 7. cmd_vel → STM32 serial forwarder ───────────────────────────
     cmd_vel_sender = Node(
         package='handheld_mapping',
         executable='cmd_vel_sender',
@@ -177,7 +193,7 @@ def generate_launch_description():
         }],
     )
 
-    # ── 7. cmd_vel monitor ──────────────────────────────────────────
+    # ── 8. cmd_vel monitor ──────────────────────────────────────────
     cmd_vel_monitor = Node(
         package='handheld_mapping',
         executable='cmd_vel_monitor',
@@ -185,7 +201,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── 8. RViz2 ────────────────────────────────────────────────────
+    # ── 9. RViz2 ────────────────────────────────────────────────────
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -202,6 +218,7 @@ def generate_launch_description():
         declare_lidar_port,
         declare_stm32_port,
         declare_stm32_baud,
+        declare_lookahead,
         declare_use_rviz,
         ydlidar_node,
         tf_base_laser,
@@ -214,6 +231,7 @@ def generate_launch_description():
         bt_navigator_node,
         waypoint_node,
         lifecycle_nav_node,
+        virtual_goal_node,
         cmd_vel_sender,
         cmd_vel_monitor,
         rviz_node,
