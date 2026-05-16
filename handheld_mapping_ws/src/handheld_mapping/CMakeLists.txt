@@ -50,4 +50,16 @@ install(PROGRAMS
   RENAME virtual_goal_publisher
 )
 
+install(PROGRAMS
+  scripts/mqtt_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mqtt_bridge
+)
+
+install(PROGRAMS
+  scripts/stm32_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME stm32_bridge
+)
+
 ament_package()

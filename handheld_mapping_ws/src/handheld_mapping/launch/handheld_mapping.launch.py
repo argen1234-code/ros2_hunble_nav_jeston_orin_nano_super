@@ -110,6 +110,30 @@ def generate_launch_description():
         output='screen',
     )
 
+    # ── Virtual goal publisher (GPS mode navigation) ─────────────────
+    virtual_goal_node = Node(
+        package='handheld_mapping',
+        executable='virtual_goal_publisher',
+        name='virtual_goal_publisher',
+        output='screen',
+    )
+
+    # ── STM32 bidirectional bridge ───────────────────────────────────
+    stm32_bridge_node = Node(
+        package='handheld_mapping',
+        executable='stm32_bridge',
+        name='stm32_bridge',
+        output='screen',
+    )
+
+    # ── MQTT cloud bridge ────────────────────────────────────────────
+    mqtt_bridge_node = Node(
+        package='handheld_mapping',
+        executable='mqtt_bridge',
+        name='mqtt_bridge',
+        output='screen',
+    )
+
     # ── RViz2 ────────────────────────────────────────────────────────
     rviz_node = Node(
         package='rviz2',
@@ -134,5 +158,8 @@ def generate_launch_description():
         laser_odom_node,
         slam_node,
         map_saver_node,
+        virtual_goal_node,
+        stm32_bridge_node,
+        mqtt_bridge_node,
         rviz_node,
     ])

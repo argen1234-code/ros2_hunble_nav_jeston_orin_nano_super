@@ -43,7 +43,7 @@ def generate_launch_description():
         description='LiDAR serial port')
 
     declare_stm32_port = DeclareLaunchArgument(
-        'stm32_port', default_value='/dev/ttyACM0',
+        'stm32_port', default_value='/dev/ttyACM1',
         description='STM32 virtual COM port')
 
     declare_stm32_baud = DeclareLaunchArgument(
@@ -181,11 +181,11 @@ def generate_launch_description():
         }],
     )
 
-    # ── 7. cmd_vel → STM32 serial forwarder ───────────────────────────
-    cmd_vel_sender = Node(
+    # ── 7. STM32 bidirectional bridge (cmd_vel + mode → STM32, heading ← STM32) ──
+    stm32_bridge_node = Node(
         package='handheld_mapping',
-        executable='cmd_vel_sender',
-        name='cmd_vel_sender',
+        executable='stm32_bridge',
+        name='stm32_bridge',
         output='screen',
         parameters=[{
             'port': stm32_port,
@@ -193,7 +193,23 @@ def generate_launch_description():
         }],
     )
 
-    # ── 8. cmd_vel monitor ──────────────────────────────────────────
+    # ── 8. MQTT cloud bridge ────────────────────────────────────────
+    mqtt_bridge_node = Node(
+        package='handheld_mapping',
+        executable='mqtt_bridge',
+        name='mqtt_bridge',
+        output='screen',
+    )
+
+    # ── 9. Map saver ────────────────────────────────────────────────
+    map_saver_node = Node(
+        package='handheld_mapping',
+        executable='map_saver',
+        name='map_saver',
+        output='screen',
+    )
+
+    # ── 10. cmd_vel monitor (debug) ─────────────────────────────────
     cmd_vel_monitor = Node(
         package='handheld_mapping',
         executable='cmd_vel_monitor',
@@ -201,7 +217,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── 9. RViz2 ────────────────────────────────────────────────────
+    # ── 11. RViz2 ───────────────────────────────────────────────────
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -232,7 +248,9 @@ def generate_launch_description():
         waypoint_node,
         lifecycle_nav_node,
         virtual_goal_node,
-        cmd_vel_sender,
+        stm32_bridge_node,
+        mqtt_bridge_node,
+        map_saver_node,
         cmd_vel_monitor,
         rviz_node,
     ])

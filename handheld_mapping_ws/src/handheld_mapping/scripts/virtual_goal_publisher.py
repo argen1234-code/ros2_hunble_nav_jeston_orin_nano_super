@@ -21,6 +21,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import Quaternion
+from std_msgs.msg import Float32, Int8
 
 
 class VirtualGoalPublisher(Node):
@@ -44,6 +45,16 @@ class VirtualGoalPublisher(Node):
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._exceptions = (LookupException, ConnectivityException, ExtrapolationException)
 
+        # GPS heading from STM32 (degrees, 0=straight ahead, CW+)
+        self._gps_heading = None
+        self._heading_sub = self.create_subscription(
+            Float32, '/gps_heading', self._on_gps_heading, 10)
+
+        # Robot mode: only publish goals in GPS mode (1)
+        self._robot_mode = 1  # default GPS
+        self._mode_sub = self.create_subscription(
+            Int8, '/robot_mode', self._on_robot_mode, 10)
+
         # Nav2 action client
         self._action_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self._last_goal_xy = None
@@ -55,6 +66,12 @@ class VirtualGoalPublisher(Node):
             f'Virtual goal: lookahead={self._lookahead}m '
             f'interval={self._update_interval}s '
             f'map={self._map_frame} robot={self._robot_frame}')
+
+    def _on_gps_heading(self, msg: Float32):
+        self._gps_heading = msg.data
+
+    def _on_robot_mode(self, msg: Int8):
+        self._robot_mode = msg.data
 
     def _get_robot_pose(self):
         """Return (x, y, yaw) of robot in map frame, or None on failure."""
@@ -72,7 +89,11 @@ class VirtualGoalPublisher(Node):
         return (x, y, yaw)
 
     def _tick(self):
-        """Always recompute and send goal ahead of the current robot pose."""
+        """Send virtual goal in GPS mode; idle in REMOTE/LINE modes."""
+        if self._robot_mode != 1:  # GPS = 1
+            self.get_logger().debug(f'Mode {self._robot_mode}: goal publishing paused')
+            return
+
         if self._action_client.server_is_ready() is False:
             self.get_logger().debug('Action server not ready')
             return
@@ -83,9 +104,16 @@ class VirtualGoalPublisher(Node):
             return
         rx, ry, ryaw = pose
 
-        # Carrot always ahead of the robot's current position & heading
-        gx = rx + self._lookahead * math.cos(ryaw)
-        gy = ry + self._lookahead * math.sin(ryaw)
+        # Goal direction: GPS heading from STM32 if available, else robot heading
+        if self._gps_heading is not None and abs(self._gps_heading) > 0.01:
+            goal_yaw = ryaw + math.radians(self._gps_heading)
+            self.get_logger().debug(
+                f'GPS heading={self._gps_heading:.1f}° goal_yaw={math.degrees(goal_yaw):.0f}°')
+        else:
+            goal_yaw = ryaw
+
+        gx = rx + self._lookahead * math.cos(goal_yaw)
+        gy = ry + self._lookahead * math.sin(goal_yaw)
 
         # Throttle: skip if goal barely moved (robot hasn't travelled)
         if self._last_goal_xy is not None:
@@ -94,7 +122,7 @@ class VirtualGoalPublisher(Node):
                 return
 
         self._last_goal_xy = (gx, gy)
-        self._send(gx, gy, ryaw)
+        self._send(gx, gy, goal_yaw)
 
     def _send(self, x, y, yaw):
         goal = NavigateToPose.Goal()
