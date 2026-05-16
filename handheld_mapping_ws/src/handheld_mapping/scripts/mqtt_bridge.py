@@ -191,13 +191,13 @@ class MqttBridge(Node):
 
         tw = Twist()
         if direction == 'FORWARD':
-            tw.linear.x  = frac * self._max_linear
-        elif direction == 'BACKWARD':
             tw.linear.x  = -frac * self._max_linear
+        elif direction == 'BACKWARD':
+            tw.linear.x  = frac * self._max_linear
         elif direction == 'LEFT':
-            tw.angular.z = frac * self._max_angular
-        elif direction == 'RIGHT':
             tw.angular.z = -frac * self._max_angular
+        elif direction == 'RIGHT':
+            tw.angular.z = frac * self._max_angular
         # STOP → all zeros
 
         self._remote_cmd_pub.publish(tw)

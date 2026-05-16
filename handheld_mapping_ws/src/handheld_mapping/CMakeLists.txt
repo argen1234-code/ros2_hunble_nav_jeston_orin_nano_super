@@ -62,4 +62,9 @@ install(PROGRAMS
   RENAME stm32_bridge
 )
 
+install(PROGRAMS
+  scripts/find_stm32_port.py
+  DESTINATION share/${PROJECT_NAME}/scripts
+)
+
 ament_package()

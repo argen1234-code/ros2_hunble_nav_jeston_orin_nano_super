@@ -15,12 +15,12 @@
     llsamplestep: 0.01
     lsigma: 0.075
     lskip: 0
-    lstep: 0.05
-    map_update_interval: 5.0
+    lstep: 0.01
+    map_update_interval: 2.0
     maxRange: 6.0
     maxUrange: 4.0
     minimum_score: 0.0
-    occ_thresh: 0.25
+    occ_thresh: 0.35
     ogain: 3.0
     particles: 30
     qos_overrides:

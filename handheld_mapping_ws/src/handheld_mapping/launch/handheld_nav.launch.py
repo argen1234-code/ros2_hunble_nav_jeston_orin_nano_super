@@ -16,7 +16,7 @@ In RViz:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -43,8 +43,12 @@ def generate_launch_description():
         description='LiDAR serial port')
 
     declare_stm32_port = DeclareLaunchArgument(
-        'stm32_port', default_value='/dev/ttyACM1',
-        description='STM32 virtual COM port')
+        'stm32_port',
+        default_value=Command([
+            'python3 ',
+            PathJoinSubstitution([
+                FindPackageShare('handheld_mapping'), 'scripts', 'find_stm32_port.py'])]),
+        description='STM32 virtual COM port (auto-detected)')
 
     declare_stm32_baud = DeclareLaunchArgument(
         'stm32_baud', default_value='115200',
