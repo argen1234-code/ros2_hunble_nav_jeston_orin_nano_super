@@ -16,11 +16,13 @@ Usage:
 
 import json
 import math
+import os
 import time
 import threading
 
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Int8
@@ -38,14 +40,22 @@ class MqttBridge(Node):
     def __init__(self):
         super().__init__('mqtt_bridge')
 
+        package_share = get_package_share_directory('handheld_mapping')
+        bundled_ca = os.path.join(package_share, 'certs', 'emqxsl-ca.crt')
+
         # ── MQTT connection params ──────────────────────────────────
-        self.declare_parameter('broker', 'iot-06z00gf86e5n0dr.mqtt.iothub.aliyuncs.com')
-        self.declare_parameter('port', 1883)
-        self.declare_parameter('client_id',
-            'k1ck5t83zdZ.test|securemode=2,signmethod=hmacsha256,timestamp=1747068235323|')
-        self.declare_parameter('username', 'test&k1ck5t83zdZ')
-        self.declare_parameter('password',
-            'dc2752751c8cd987419c9cb1d81ec37909a70d1b31d202eeb2ec7799bbd05017')
+        # EMQX Serverless defaults for zero-config startup. Every value can
+        # still be overridden through an EMQX_* environment variable.
+        self.declare_parameter(
+            'broker', os.environ.get('EMQX_BROKER', 'i6130f30.ala.cn-hangzhou.emqxsl.cn'))
+        self.declare_parameter('port', int(os.environ.get('EMQX_PORT', '8883')))
+        self.declare_parameter(
+            'client_id', os.environ.get('EMQX_CLIENT_ID', 'robot_001_jetson'))
+        self.declare_parameter(
+            'username', os.environ.get('EMQX_USERNAME', 'robot_001'))
+        self.declare_parameter('password', os.environ.get('EMQX_PASSWORD', '123456'))
+        self.declare_parameter(
+            'ca_certs', os.environ.get('EMQX_CA_CERTS', bundled_ca))
 
         # ── Topics ──────────────────────────────────────────────────
         self.declare_parameter('sub_topic', '/k1ck5t83zdZ/test/user/get')
@@ -66,6 +76,7 @@ class MqttBridge(Node):
         _cid      = self.get_parameter('client_id').value
         _user     = self.get_parameter('username').value
         _pw       = self.get_parameter('password').value
+        _ca_certs = self.get_parameter('ca_certs').value
 
         self._sub_topic     = self.get_parameter('sub_topic').value
         self._pub_topic     = self.get_parameter('pub_topic').value
@@ -103,6 +114,11 @@ class MqttBridge(Node):
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=_cid)
         self._mqtt.username_pw_set(_user, _pw)
+        try:
+            self._mqtt.tls_set(ca_certs=_ca_certs)
+        except Exception as exc:
+            self.get_logger().fatal(f'Cannot configure MQTT TLS CA { _ca_certs }: {exc}')
+            raise
         self._mqtt.on_connect = self._on_connect
         self._mqtt.on_message = self._on_message
         self._mqtt_connected = False

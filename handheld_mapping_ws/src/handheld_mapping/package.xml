@@ -27,6 +27,7 @@
   <exec_depend>slam_gmapping</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

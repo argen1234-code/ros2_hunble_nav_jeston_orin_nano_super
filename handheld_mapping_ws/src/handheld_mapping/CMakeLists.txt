@@ -11,6 +11,7 @@ install(DIRECTORY
   launch
   params
   config
+  certs
   DESTINATION share/${PROJECT_NAME}
 )
 
