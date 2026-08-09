@@ -9,6 +9,7 @@ import json
 import math
 import struct
 import time
+from collections import deque
 
 import rclpy
 from geometry_msgs.msg import Twist
@@ -31,6 +32,11 @@ MODE_GPS_ROS = 1
 MODE_REMOTE = 2
 MODE_INDOOR = 3
 MODE_GPS_ONLY = 4
+
+GPS_ROUTE_BEGIN = 1
+GPS_ROUTE_POINT = 2
+GPS_ROUTE_COMMIT = 3
+GPS_ROUTE_CLEAR = 4
 
 FLAG_GPS_VALID = 0x01
 FLAG_MAG_VALID = 0x02
@@ -71,12 +77,15 @@ class Stm32Bridge(Node):
         self._nav_time = 0.0
         self._remote_time = 0.0
         self._gps_ros_enabled = False
+        self._gps_route_packets = deque()
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(Twist, '/cmd_vel', self._on_nav_cmd, 10)
         self.create_subscription(Twist, '/remote_cmd_vel', self._on_remote_cmd, 10)
         self.create_subscription(
             Bool, '/gps_ros/control_enabled', self._on_gps_ros_enabled, 10)
+        self.create_subscription(
+            String, '/gps_only/route_command', self._on_gps_route_command, 10)
 
         self._legacy_heading_pub = self.create_publisher(Float32, '/gps_heading', 10)
         self._gps_pub = self.create_publisher(NavSatFix, '/gps_fix', 10)
@@ -113,6 +122,55 @@ class Stm32Bridge(Node):
     def _on_gps_ros_enabled(self, msg):
         self._gps_ros_enabled = bool(msg.data)
 
+    def _on_gps_route_command(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        command = str(data.get('command', '')).upper()
+        if command == 'GPS_ONLY_ROUTE_CLEAR':
+            self._gps_route_packets.clear()
+            self._gps_route_packets.append(
+                self._build_route_packet(GPS_ROUTE_CLEAR, 0, 0, 1, 0.0, 0.0))
+            return
+        if command != 'GPS_ONLY_ROUTE_SET':
+            return
+
+        raw_waypoints = data.get('waypoints', [])
+        if not isinstance(raw_waypoints, list):
+            return
+        waypoints = []
+        for point in raw_waypoints[:10]:
+            try:
+                latitude = float(point['latitude'])
+                longitude = float(point['longitude'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (math.isfinite(latitude) and math.isfinite(longitude) and
+                    -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+                waypoints.append((latitude, longitude))
+        if not waypoints:
+            return
+
+        total = len(waypoints)
+        loop_enable = 1 if data.get('loop_enable', True) else 0
+        packets = [self._build_route_packet(
+            GPS_ROUTE_BEGIN, 0, total, loop_enable, 0.0, 0.0)]
+        packets.extend(
+            self._build_route_packet(
+                GPS_ROUTE_POINT, index, total, loop_enable, latitude, longitude)
+            for index, (latitude, longitude) in enumerate(waypoints))
+        packets.append(self._build_route_packet(
+            GPS_ROUTE_COMMIT, 0, total, loop_enable, 0.0, 0.0))
+        self._gps_route_packets.clear()
+        self._gps_route_packets.extend(packets)
+        self.get_logger().info(f'Queued {total} GPS-only waypoints for STM32')
+
+    def _build_route_packet(self, command, index, total, loop_enable, latitude, longitude):
+        data = struct.pack(
+            '<BBBBdd', command, index, total, loop_enable, latitude, longitude)
+        return b'\xdd\x55' + data + bytes([self._xor(data)])
+
     def _send(self):
         now = time.monotonic()
         vx = 0.0
@@ -131,6 +189,8 @@ class Stm32Bridge(Node):
         data = struct.pack(TX_FMT, self._mode, vx, wz)
         try:
             self.ser.write(TX_HEADER + data + bytes([self._xor(data)]))
+            if self._gps_route_packets:
+                self.ser.write(self._gps_route_packets.popleft())
         except serial.SerialException as exc:
             self.get_logger().error(f'STM32 TX error: {exc}')
 

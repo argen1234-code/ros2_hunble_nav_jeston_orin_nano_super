@@ -114,6 +114,8 @@ class MqttBridge(Node):
         self._indoor_command_pub = self.create_publisher(String, '/indoor/mission_command', 10)
         self._gps_ros_command_pub = self.create_publisher(
             String, '/gps_ros/mission_command', 10)
+        self._gps_only_route_pub = self.create_publisher(
+            String, '/gps_only/route_command', 10)
 
         # ── ROS2 subscriptions ──────────────────────────────────────
         self._gps_sub = self.create_subscription(
@@ -231,6 +233,15 @@ class MqttBridge(Node):
                 String(data=json.dumps(data, separators=(',', ':'))))
             self.get_logger().info(f'[云] GPS+ROS航点命令 → {cmd}')
 
+        elif cmd in ('GPS_ONLY_ROUTE_SET', 'GPS_ONLY_ROUTE_CLEAR'):
+            if cmd == 'GPS_ONLY_ROUTE_SET' and self._mode != MODE_GPS_ONLY:
+                self._remote_cmd_pub.publish(Twist())
+                self._mode = MODE_GPS_ONLY
+                self._mode_pub.publish(Int8(data=self._mode))
+            self._gps_only_route_pub.publish(
+                String(data=json.dumps(data, separators=(',', ':'))))
+            self.get_logger().info(f'[云] 纯GPS路径命令 → {cmd}')
+
         else:
             self.get_logger().info(f'[云] 未知指令: {cmd}, params={data}')
 
@@ -342,6 +353,7 @@ class MqttBridge(Node):
             'gps_valid': data.get('gps_valid', False),
             'satellites': data.get('satellites', 0),
             'fix_quality': data.get('fix_quality', 0),
+            'gps_route_total': data.get('route_total', 0),
             'heading_source_available': bool(
                 data.get('gnss_heading_valid') or data.get('mag_valid')),
         }
