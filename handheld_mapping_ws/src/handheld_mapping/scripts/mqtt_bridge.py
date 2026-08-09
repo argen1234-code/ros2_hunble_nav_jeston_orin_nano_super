@@ -116,6 +116,7 @@ class MqttBridge(Node):
             String, '/gps_ros/mission_command', 10)
         self._gps_only_route_pub = self.create_publisher(
             String, '/gps_only/route_command', 10)
+        self._mode_speed_pub = self.create_publisher(String, '/mode_speed', 10)
 
         # ── ROS2 subscriptions ──────────────────────────────────────
         self._gps_sub = self.create_subscription(
@@ -210,8 +211,8 @@ class MqttBridge(Node):
             self.get_logger().info(f'[云] 拍照指令')
 
         elif cmd == 'SPEED':
-            self._speed_pct = int(spd)
-            self.get_logger().info(f'[云] 速度设为 {self._speed_pct}%')
+            target_mode = int(data.get('mode', self._mode))
+            self._publish_mode_speed(target_mode, spd)
 
         elif cmd in ('FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP'):
             self._handle_move(cmd, int(spd))
@@ -220,6 +221,8 @@ class MqttBridge(Node):
             if cmd == 'INDOOR_MISSION_START' and self._mode != MODE_INDOOR:
                 self._mode = MODE_INDOOR
                 self._mode_pub.publish(Int8(data=self._mode))
+            if cmd == 'INDOOR_MISSION_START' and 'speed' in data:
+                self._publish_mode_speed(MODE_INDOOR, data['speed'])
             self._indoor_command_pub.publish(
                 String(data=json.dumps(data, separators=(',', ':'))))
             self.get_logger().info(f'[云] 室内导航命令 → {cmd}')
@@ -229,6 +232,8 @@ class MqttBridge(Node):
                 self._remote_cmd_pub.publish(Twist())
                 self._mode = MODE_GPS_ROS
                 self._mode_pub.publish(Int8(data=self._mode))
+            if cmd == 'GPS_ROS_MISSION_START' and 'speed' in data:
+                self._publish_mode_speed(MODE_GPS_ROS, data['speed'])
             self._gps_ros_command_pub.publish(
                 String(data=json.dumps(data, separators=(',', ':'))))
             self.get_logger().info(f'[云] GPS+ROS航点命令 → {cmd}')
@@ -238,6 +243,8 @@ class MqttBridge(Node):
                 self._remote_cmd_pub.publish(Twist())
                 self._mode = MODE_GPS_ONLY
                 self._mode_pub.publish(Int8(data=self._mode))
+            if cmd == 'GPS_ONLY_ROUTE_SET' and 'speed' in data:
+                self._publish_mode_speed(MODE_GPS_ONLY, data['speed'])
             self._gps_only_route_pub.publish(
                 String(data=json.dumps(data, separators=(',', ':'))))
             self.get_logger().info(f'[云] 纯GPS路径命令 → {cmd}')
@@ -246,6 +253,23 @@ class MqttBridge(Node):
             self.get_logger().info(f'[云] 未知指令: {cmd}, params={data}')
 
     # ── Mode switch ────────────────────────────────────────────────────
+
+    def _publish_mode_speed(self, mode, speed):
+        try:
+            mode = int(mode)
+            speed = max(20, min(100, int(speed)))
+        except (TypeError, ValueError):
+            self.get_logger().warning(f'Ignoring invalid speed: mode={mode}, speed={speed}')
+            return
+        if mode not in (MODE_GPS_ROS, MODE_REMOTE, MODE_INDOOR, MODE_GPS_ONLY):
+            self.get_logger().warning(f'Ignoring speed for unsupported mode {mode}')
+            return
+        if mode == MODE_REMOTE:
+            self._speed_pct = speed
+        self._mode_speed_pub.publish(String(data=json.dumps({
+            'mode': mode, 'speed': speed
+        }, separators=(',', ':'))))
+        self.get_logger().info(f'[云] mode={mode} 速度设为 {speed}%')
 
     def _handle_mode_switch(self, cmd: str):
         mode_map = {

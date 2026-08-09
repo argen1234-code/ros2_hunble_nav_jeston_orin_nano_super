@@ -37,6 +37,7 @@ GPS_ROUTE_BEGIN = 1
 GPS_ROUTE_POINT = 2
 GPS_ROUTE_COMMIT = 3
 GPS_ROUTE_CLEAR = 4
+GPS_ROUTE_SPEED = 5
 
 FLAG_GPS_VALID = 0x01
 FLAG_MAG_VALID = 0x02
@@ -78,6 +79,12 @@ class Stm32Bridge(Node):
         self._remote_time = 0.0
         self._gps_ros_enabled = False
         self._gps_route_packets = deque()
+        self._mode_speed = {
+            MODE_GPS_ROS: 1.0,
+            MODE_REMOTE: 1.0,
+            MODE_INDOOR: 1.0,
+            MODE_GPS_ONLY: 1.0,
+        }
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(Twist, '/cmd_vel', self._on_nav_cmd, 10)
@@ -86,6 +93,7 @@ class Stm32Bridge(Node):
             Bool, '/gps_ros/control_enabled', self._on_gps_ros_enabled, 10)
         self.create_subscription(
             String, '/gps_only/route_command', self._on_gps_route_command, 10)
+        self.create_subscription(String, '/mode_speed', self._on_mode_speed, 10)
 
         self._legacy_heading_pub = self.create_publisher(Float32, '/gps_heading', 10)
         self._gps_pub = self.create_publisher(NavSatFix, '/gps_fix', 10)
@@ -154,7 +162,12 @@ class Stm32Bridge(Node):
 
         total = len(waypoints)
         loop_enable = 1 if data.get('loop_enable', True) else 0
+        speed_pct = max(20, min(100, int(data.get(
+            'speed', round(self._mode_speed[MODE_GPS_ONLY] * 100)))))
+        self._mode_speed[MODE_GPS_ONLY] = speed_pct / 100.0
         packets = [self._build_route_packet(
+            GPS_ROUTE_SPEED, 0, 0, 0, float(speed_pct), 0.0),
+            self._build_route_packet(
             GPS_ROUTE_BEGIN, 0, total, loop_enable, 0.0, 0.0)]
         packets.extend(
             self._build_route_packet(
@@ -164,7 +177,23 @@ class Stm32Bridge(Node):
             GPS_ROUTE_COMMIT, 0, total, loop_enable, 0.0, 0.0))
         self._gps_route_packets.clear()
         self._gps_route_packets.extend(packets)
-        self.get_logger().info(f'Queued {total} GPS-only waypoints for STM32')
+        self.get_logger().info(
+            f'Queued {total} GPS-only waypoints for STM32 at {speed_pct}% speed')
+
+    def _on_mode_speed(self, msg):
+        try:
+            data = json.loads(msg.data)
+            mode = int(data['mode'])
+            speed_pct = max(20, min(100, int(data['speed'])))
+        except (KeyError, TypeError, ValueError):
+            return
+        if mode not in self._mode_speed:
+            return
+        self._mode_speed[mode] = speed_pct / 100.0
+        if mode == MODE_GPS_ONLY:
+            self._gps_route_packets.append(self._build_route_packet(
+                GPS_ROUTE_SPEED, 0, 0, 0, float(speed_pct), 0.0))
+        self.get_logger().info(f'Mode {mode} speed limit set to {speed_pct}%')
 
     def _build_route_packet(self, command, index, total, loop_enable, latitude, longitude):
         data = struct.pack(
@@ -183,7 +212,12 @@ class Stm32Bridge(Node):
               (self._mode == MODE_GPS_ROS and self._gps_ros_enabled)) and \
                 now - self._nav_time <= self._nav_timeout:
             # Nav2 REP-103 -> chassis sign convention.
-            vx = self._nav_cmd.linear.x * self._nav_linear_sign
+            # Forward navigation follows the per-mode limit. Negative Nav2
+            # velocity is the short BackUp recovery and must remain strong
+            # enough to overcome the chassis dead zone.
+            speed_scale = (self._mode_speed[self._mode]
+                           if self._nav_cmd.linear.x >= 0.0 else 1.0)
+            vx = self._nav_cmd.linear.x * speed_scale * self._nav_linear_sign
             wz = self._nav_cmd.angular.z * self._nav_angular_sign
         # GPS_ONLY deliberately receives zero velocity; STM32 owns its controller.
         data = struct.pack(TX_FMT, self._mode, vx, wz)
