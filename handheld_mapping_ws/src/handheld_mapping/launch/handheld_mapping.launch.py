@@ -134,6 +134,13 @@ def generate_launch_description():
         output='screen',
     )
 
+    indoor_map_bridge_node = Node(
+        package='handheld_mapping',
+        executable='indoor_map_bridge',
+        name='indoor_map_bridge',
+        output='screen',
+    )
+
     # ── RViz2 ────────────────────────────────────────────────────────
     rviz_node = Node(
         package='rviz2',
@@ -161,5 +168,6 @@ def generate_launch_description():
         virtual_goal_node,
         stm32_bridge_node,
         mqtt_bridge_node,
+        indoor_map_bridge_node,
         rviz_node,
     ])

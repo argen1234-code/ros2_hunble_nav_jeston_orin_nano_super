@@ -10,7 +10,7 @@ TX (Jetson → STM32)  12-byte packet @ send_hz:
   └──────┴──────┴────────┴──────────────────┴──────────────────┴──────────┘
   XOR = buf[2] ^ buf[3] ^ ... ^ buf[10]  (9 bytes)
 
-  mode: 1=GPS(建图导航)  2=REMOTE(遥控)  3=LINE(巡线)
+  mode: 1=GPS(建图导航)  2=REMOTE(遥控)  3=INDOOR(ROS室内导航)
 
 RX (STM32 → Jetson)  15-byte frame:
   ┌──────┬──────┬────────────────────────┬──────────────────┬──────────────────┬──────────┐
@@ -21,7 +21,7 @@ RX (STM32 → Jetson)  15-byte frame:
   XOR = buf[2] ^ buf[3] ^ ... ^ buf[13]  (12 bytes)
 
 Cmd_vel routing:
-  - mode 1 (GPS) / mode 3 (LINE): forward /cmd_vel from Nav2
+  - mode 1 (GPS) / mode 3 (INDOOR): forward /cmd_vel from Nav2
   - mode 2 (REMOTE):              forward /remote_cmd_vel from MQTT
 
 Usage:
@@ -49,7 +49,7 @@ TX_FRAME_LEN  = 2 + TX_DATA_LEN + 1      # 12
 
 MODE_GPS    = 1
 MODE_REMOTE = 2
-MODE_LINE   = 3
+MODE_INDOOR = 3
 
 
 class Stm32Bridge(Node):
@@ -117,7 +117,7 @@ class Stm32Bridge(Node):
             vx = self._remote_cmd_vel.linear.x
             vz = self._remote_cmd_vel.angular.z
         else:
-            # GPS or LINE: use Nav2 cmd_vel
+            # GPS or INDOOR: use Nav2 cmd_vel
             vx = self._nav_cmd_vel.linear.x
             vz = self._nav_cmd_vel.angular.z
 

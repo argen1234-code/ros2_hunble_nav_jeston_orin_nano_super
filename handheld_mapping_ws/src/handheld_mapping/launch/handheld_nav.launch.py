@@ -205,6 +205,20 @@ def generate_launch_description():
         output='screen',
     )
 
+    indoor_map_bridge_node = Node(
+        package='handheld_mapping',
+        executable='indoor_map_bridge',
+        name='indoor_map_bridge',
+        output='screen',
+    )
+
+    indoor_mission_manager_node = Node(
+        package='handheld_mapping',
+        executable='indoor_mission_manager',
+        name='indoor_mission_manager',
+        output='screen',
+    )
+
     # ── 9. Map saver ────────────────────────────────────────────────
     map_saver_node = Node(
         package='handheld_mapping',
@@ -254,6 +268,8 @@ def generate_launch_description():
         virtual_goal_node,
         stm32_bridge_node,
         mqtt_bridge_node,
+        indoor_map_bridge_node,
+        indoor_mission_manager_node,
         map_saver_node,
         cmd_vel_monitor,
         rviz_node,

@@ -89,7 +89,7 @@ class VirtualGoalPublisher(Node):
         return (x, y, yaw)
 
     def _tick(self):
-        """Send virtual goal in GPS mode; idle in REMOTE/LINE modes."""
+        """Send virtual goal in GPS mode; idle in REMOTE/INDOOR modes."""
         if self._robot_mode != 1:  # GPS = 1
             self.get_logger().debug(f'Mode {self._robot_mode}: goal publishing paused')
             return

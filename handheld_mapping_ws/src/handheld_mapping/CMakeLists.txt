@@ -68,4 +68,16 @@ install(PROGRAMS
   DESTINATION share/${PROJECT_NAME}/scripts
 )
 
+install(PROGRAMS
+  scripts/indoor_map_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME indoor_map_bridge
+)
+
+install(PROGRAMS
+  scripts/indoor_mission_manager.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME indoor_mission_manager
+)
+
 ament_package()
