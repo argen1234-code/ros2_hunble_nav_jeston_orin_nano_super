@@ -180,6 +180,15 @@ class MqttBridge(Node):
             self._handle_mode_switch(cmd)
 
         elif cmd == 'EMERGENCY':
+            self._indoor_command_pub.publish(String(data=json.dumps({
+                'command': 'INDOOR_MISSION_CANCEL',
+                'reason': 'EMERGENCY',
+                'request_id': data.get('request_id', ''),
+            }, separators=(',', ':'))))
+            # REMOTE + zero velocity prevents STM32 from continuing to consume
+            # Nav2 cmd_vel while the asynchronous Nav2 cancellation completes.
+            self._mode = MODE_REMOTE
+            self._mode_pub.publish(Int8(data=self._mode))
             self.get_logger().info(f'[云] 急停 → cmd_vel=0')
             self._remote_cmd_pub.publish(Twist())
 
@@ -215,6 +224,7 @@ class MqttBridge(Node):
         }
         new_mode = mode_map[cmd]
         if new_mode != self._mode:
+            self._remote_cmd_pub.publish(Twist())
             self._mode = new_mode
             self._mode_pub.publish(Int8(data=self._mode))
             self.get_logger().info(f'[云] 模式切换 → {cmd} (mode={self._mode})')
