@@ -11,6 +11,7 @@ from rclpy.node import Node
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Quaternion
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from std_msgs.msg import Int8, String
 from tf2_ros import Buffer, TransformListener
 
@@ -21,7 +22,18 @@ MODE_INDOOR = 3
 class IndoorMissionManager(Node):
     def __init__(self):
         super().__init__('indoor_mission_manager')
+        self.declare_parameter('max_goal_retries', 2)
+        self.declare_parameter('retry_delay', 1.5)
+        self._max_goal_retries = max(
+            0, int(self.get_parameter('max_goal_retries').value))
+        self._retry_delay = max(
+            0.0, float(self.get_parameter('retry_delay').value))
+
         self._action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
+        self._clear_local_costmap = self.create_client(
+            ClearEntireCostmap, '/local_costmap/clear_entirely_local_costmap')
+        self._clear_global_costmap = self.create_client(
+            ClearEntireCostmap, '/global_costmap/clear_entirely_global_costmap')
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._state_pub = self.create_publisher(String, '/indoor/mission_state', 10)
@@ -45,7 +57,10 @@ class IndoorMissionManager(Node):
         self._last_state_signature = None
         self._last_state_publish = 0.0
         self._generation = 0
-        self.get_logger().info('Indoor mission manager ready')
+        self._goal_retry_count = 0
+        self.get_logger().info(
+            f'Indoor mission manager ready: retries={self._max_goal_retries} '
+            f'retry_delay={self._retry_delay:.1f}s')
 
     def _on_mode(self, msg: Int8):
         self._mode = int(msg.data)
@@ -101,6 +116,7 @@ class IndoorMissionManager(Node):
         self._dwell_until = 0.0
         self._last_distance = None
         self._last_feedback_publish = 0.0
+        self._goal_retry_count = 0
         self._publish_state('STARTED', message='Mission accepted')
 
     def _tick(self):
@@ -178,17 +194,50 @@ class IndoorMissionManager(Node):
         if not self._active:
             return
         if status != GoalStatus.STATUS_SUCCEEDED:
+            if (status == GoalStatus.STATUS_ABORTED and
+                    self._mode == MODE_INDOOR and
+                    self._goal_retry_count < self._max_goal_retries):
+                self._goal_retry_count += 1
+                self._last_distance = None
+                self._clear_costmaps()
+                self._dwell_until = time.monotonic() + self._retry_delay
+                self._publish_state(
+                    'RETRYING',
+                    message=(f'Nav2 aborted; retrying waypoint '
+                             f'{self._goal_retry_count}/{self._max_goal_retries}'))
+                self.get_logger().warning(
+                    f'Waypoint {self._index + 1} aborted; clearing costmaps and '
+                    f'retrying ({self._goal_retry_count}/{self._max_goal_retries})')
+                return
             self._active = False
-            self._publish_state('FAILED', message=f'Nav2 status={status}')
+            self._publish_state(
+                'FAILED',
+                message=(f'Nav2 status={status}; retries exhausted '
+                         f'({self._goal_retry_count}/{self._max_goal_retries})'))
             return
 
         reached = self._waypoints[self._index]
+        self._goal_retry_count = 0
         self._publish_state('WAYPOINT_REACHED', message=f"到达{reached['name']}")
         if not self._advance_index():
             self._active = False
             self._publish_state('COMPLETED', message='Mission completed')
             return
         self._dwell_until = time.monotonic() + self._dwell_seconds
+
+    def _clear_costmaps(self):
+        for name, client in (
+                ('local', self._clear_local_costmap),
+                ('global', self._clear_global_costmap)):
+            if not client.service_is_ready():
+                self.get_logger().warning(
+                    f'{name} costmap clear service is not ready')
+                continue
+            try:
+                client.call_async(ClearEntireCostmap.Request())
+            except Exception as exc:
+                self.get_logger().warning(
+                    f'Failed to clear {name} costmap: {exc}')
 
     def _advance_index(self):
         count = len(self._waypoints)
@@ -223,6 +272,7 @@ class IndoorMissionManager(Node):
         was_active = self._active
         self._active = False
         self._dwell_until = 0.0
+        self._goal_retry_count = 0
         if was_active or reason == 'USER_CANCELLED':
             self._publish_state('CANCELLED', message=reason)
 
@@ -258,6 +308,8 @@ class IndoorMissionManager(Node):
             'total_waypoints': len(self._waypoints),
             'distance_remaining': (
                 round(self._last_distance, 2) if self._last_distance is not None else None),
+            'retry_count': self._goal_retry_count,
+            'max_retries': self._max_goal_retries,
             'timestamp': time.time(),
         }
         if extra:

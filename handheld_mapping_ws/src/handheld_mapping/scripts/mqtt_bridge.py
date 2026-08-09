@@ -215,6 +215,7 @@ class MqttBridge(Node):
             self._publish_mode_speed(target_mode, spd)
 
         elif cmd in ('FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP'):
+            self._enter_remote_control(cmd, data.get('request_id', ''))
             self._handle_move(cmd, int(spd))
 
         elif cmd in ('INDOOR_MISSION_START', 'INDOOR_MISSION_CANCEL', 'INDOOR_RECORD_POINT'):
@@ -253,6 +254,27 @@ class MqttBridge(Node):
             self.get_logger().info(f'[云] 未知指令: {cmd}, params={data}')
 
     # ── Mode switch ────────────────────────────────────────────────────
+
+    def _enter_remote_control(self, command, request_id):
+        """Manual commands take ownership from every autonomous controller."""
+        if self._mode == MODE_REMOTE:
+            return
+
+        self._indoor_command_pub.publish(String(data=json.dumps({
+            'command': 'INDOOR_MISSION_CANCEL',
+            'reason': f'MANUAL_{command}',
+            'request_id': request_id,
+        }, separators=(',', ':'))))
+        self._gps_ros_command_pub.publish(String(data=json.dumps({
+            'command': 'GPS_ROS_MISSION_CANCEL',
+            'reason': f'MANUAL_{command}',
+            'request_id': request_id,
+        }, separators=(',', ':'))))
+        self._remote_cmd_pub.publish(Twist())
+        self._mode = MODE_REMOTE
+        self._mode_pub.publish(Int8(data=self._mode))
+        self.get_logger().info(
+            f'[云] 人工指令 {command} 接管控制 → REMOTE (mode={self._mode})')
 
     def _publish_mode_speed(self, mode, speed):
         try:
