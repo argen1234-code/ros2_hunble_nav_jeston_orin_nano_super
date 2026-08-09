@@ -40,7 +40,7 @@ bt_navigator_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    controller_frequency: 12.0
+    controller_frequency: 20.0
     min_x_velocity_threshold: 0.005
     min_y_velocity_threshold: 0.005
     min_theta_velocity_threshold: 0.01
@@ -65,11 +65,11 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.22
-      lookahead_dist: 0.45
-      min_lookahead_dist: 0.25
-      max_lookahead_dist: 0.65
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.75
+      lookahead_dist: 0.55
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.80
+      lookahead_time: 1.8
+      rotate_to_heading_angular_vel: 0.65
       transform_tolerance: 0.20
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
@@ -85,7 +85,7 @@ controller_server:
       inflation_cost_scaling_factor: 4.0
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.60
-      max_angular_accel: 1.2
+      max_angular_accel: 0.9
       allow_reversing: false
 
 controller_server_rclcpp_node:
@@ -95,13 +95,13 @@ controller_server_rclcpp_node:
 velocity_smoother:
   ros__parameters:
     use_sim_time: false
-    smoothing_frequency: 20.0
+    smoothing_frequency: 30.0
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity: [0.22, 0.0, 0.85]
     min_velocity: [0.0, 0.0, -0.85]
-    max_accel: [0.40, 0.0, 1.20]
-    max_decel: [-0.55, 0.0, -1.50]
+    max_accel: [0.32, 0.0, 0.90]
+    max_decel: [-0.45, 0.0, -1.10]
     odom_topic: /odom
     odom_duration: 0.1
     deadband_velocity: [0.005, 0.0, 0.01]

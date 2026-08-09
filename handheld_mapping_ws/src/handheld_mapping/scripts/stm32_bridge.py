@@ -62,6 +62,8 @@ class Stm32Bridge(Node):
         self.declare_parameter('nav_linear_sign', -1.0)
         self.declare_parameter('nav_angular_sign', -1.0)
         self.declare_parameter('min_effective_angular', 0.28)
+        self.declare_parameter('indoor_linear_gain', 1.35)
+        self.declare_parameter('indoor_max_linear', 0.32)
         self.declare_parameter('nav_cmd_timeout', 0.5)
         self.declare_parameter('remote_cmd_timeout', 0.5)
 
@@ -71,6 +73,10 @@ class Stm32Bridge(Node):
         self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
         self._min_effective_angular = max(
             0.0, float(self.get_parameter('min_effective_angular').value))
+        self._indoor_linear_gain = max(
+            1.0, float(self.get_parameter('indoor_linear_gain').value))
+        self._indoor_max_linear = max(
+            0.0, float(self.get_parameter('indoor_max_linear').value))
         self._nav_timeout = float(self.get_parameter('nav_cmd_timeout').value)
         self._remote_timeout = float(self.get_parameter('remote_cmd_timeout').value)
         self.ser = serial.Serial(port, baudrate, timeout=0)
@@ -111,7 +117,9 @@ class Stm32Bridge(Node):
         self.create_timer(1.0 / read_hz, self._read)
         self.get_logger().info(
             f'STM32 bridge ready: {port}@{baudrate}, tx={send_hz}Hz rx={read_hz}Hz, '
-            f'min_wz={self._min_effective_angular:.2f}rad/s')
+            f'min_wz={self._min_effective_angular:.2f}rad/s, '
+            f'indoor_gain={self._indoor_linear_gain:.2f}, '
+            f'indoor_max={self._indoor_max_linear:.2f}m/s')
 
     def _on_mode(self, msg):
         if msg.data not in (MODE_GPS_ROS, MODE_REMOTE, MODE_INDOOR, MODE_GPS_ONLY):
@@ -221,7 +229,11 @@ class Stm32Bridge(Node):
             # enough to overcome the chassis dead zone.
             speed_scale = (self._mode_speed[self._mode]
                            if self._nav_cmd.linear.x >= 0.0 else 1.0)
+            if self._mode == MODE_INDOOR and self._nav_cmd.linear.x >= 0.0:
+                speed_scale *= self._indoor_linear_gain
             vx = self._nav_cmd.linear.x * speed_scale * self._nav_linear_sign
+            if self._mode == MODE_INDOOR and abs(vx) > self._indoor_max_linear:
+                vx = math.copysign(self._indoor_max_linear, vx)
             wz = self._nav_cmd.angular.z * self._nav_angular_sign
         wz = self._compensate_angular_deadzone(wz)
         # GPS_ONLY deliberately receives zero velocity; STM32 owns its controller.
