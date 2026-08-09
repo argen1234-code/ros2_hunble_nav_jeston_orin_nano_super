@@ -112,6 +112,8 @@ class MqttBridge(Node):
         self._mode_pub = self.create_publisher(Int8, '/robot_mode', 10)
         self._remote_cmd_pub = self.create_publisher(Twist, '/remote_cmd_vel', 10)
         self._indoor_command_pub = self.create_publisher(String, '/indoor/mission_command', 10)
+        self._gps_ros_command_pub = self.create_publisher(
+            String, '/gps_ros/mission_command', 10)
 
         # ── ROS2 subscriptions ──────────────────────────────────────
         self._gps_sub = self.create_subscription(
@@ -190,6 +192,11 @@ class MqttBridge(Node):
                 'reason': 'EMERGENCY',
                 'request_id': data.get('request_id', ''),
             }, separators=(',', ':'))))
+            self._gps_ros_command_pub.publish(String(data=json.dumps({
+                'command': 'GPS_ROS_MISSION_CANCEL',
+                'reason': 'EMERGENCY',
+                'request_id': data.get('request_id', ''),
+            }, separators=(',', ':'))))
             # REMOTE + zero velocity prevents STM32 from continuing to consume
             # Nav2 cmd_vel while the asynchronous Nav2 cancellation completes.
             self._mode = MODE_REMOTE
@@ -214,6 +221,15 @@ class MqttBridge(Node):
             self._indoor_command_pub.publish(
                 String(data=json.dumps(data, separators=(',', ':'))))
             self.get_logger().info(f'[云] 室内导航命令 → {cmd}')
+
+        elif cmd in ('GPS_ROS_MISSION_START', 'GPS_ROS_MISSION_CANCEL'):
+            if cmd == 'GPS_ROS_MISSION_START' and self._mode != MODE_GPS_ROS:
+                self._remote_cmd_pub.publish(Twist())
+                self._mode = MODE_GPS_ROS
+                self._mode_pub.publish(Int8(data=self._mode))
+            self._gps_ros_command_pub.publish(
+                String(data=json.dumps(data, separators=(',', ':'))))
+            self.get_logger().info(f'[云] GPS+ROS航点命令 → {cmd}')
 
         else:
             self.get_logger().info(f'[云] 未知指令: {cmd}, params={data}')

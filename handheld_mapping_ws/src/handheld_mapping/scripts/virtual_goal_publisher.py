@@ -73,6 +73,12 @@ class GpsRosController(Node):
         self._sensor_time = 0.0
         self._route = {}
         self._route_total = 0
+        self._cloud_route = []
+        self._cloud_mission_active = False
+        self._cloud_mission_configured = False
+        self._patrol_mode = 'ONCE'
+        self._patrol_direction = 1
+        self._mission_dwell_seconds = self._dwell_seconds
         self._waypoint_index = 0
         self._dwell_until = 0.0
         self._last_goal = None
@@ -82,6 +88,8 @@ class GpsRosController(Node):
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(String, '/stm32/sensors', self._on_sensors, 10)
+        self.create_subscription(
+            String, '/gps_ros/mission_command', self._on_mission_command, 10)
         self._state_pub = self.create_publisher(String, '/gps_ros/state', 10)
         self._enable_pub = self.create_publisher(Bool, '/gps_ros/control_enabled', 10)
         self._action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
@@ -98,6 +106,8 @@ class GpsRosController(Node):
         self._waypoint_index = 0
         self._dwell_until = 0.0
         if self._mode != MODE_GPS_ROS:
+            self._cloud_mission_active = False
+            self._cloud_mission_configured = False
             self._stop('MODE_INACTIVE')
 
     def _on_sensors(self, msg):
@@ -118,6 +128,88 @@ class GpsRosController(Node):
             self._route[slot] = (
                 float(data.get('route_latitude', 0.0)),
                 float(data.get('route_longitude', 0.0)))
+
+    def _on_mission_command(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        command = str(data.get('command', '')).upper()
+        if command == 'GPS_ROS_MISSION_CANCEL':
+            self._cloud_mission_active = False
+            self._cloud_mission_configured = True
+            self._cloud_route = []
+            self._waypoint_index = 0
+            self._stop('MISSION_CANCELLED')
+            return
+        if command != 'GPS_ROS_MISSION_START':
+            return
+
+        route = []
+        raw_waypoints = data.get('waypoints', [])
+        if not isinstance(raw_waypoints, list):
+            raw_waypoints = []
+        for point in raw_waypoints[:50]:
+            try:
+                latitude = float(point['latitude'])
+                longitude = float(point['longitude'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (math.isfinite(latitude) and math.isfinite(longitude) and
+                    -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+                route.append((latitude, longitude))
+        if not route:
+            self._stop('MISSION_REJECTED_EMPTY')
+            return
+
+        patrol_mode = str(data.get('patrol_mode', 'ONCE')).upper()
+        if patrol_mode not in ('ONCE', 'LOOP', 'PING_PONG'):
+            patrol_mode = 'ONCE'
+        self._cloud_route = route
+        self._cloud_mission_active = True
+        self._cloud_mission_configured = True
+        self._patrol_mode = patrol_mode
+        self._patrol_direction = 1
+        try:
+            dwell_seconds = float(data.get('dwell_seconds', self._dwell_seconds))
+        except (TypeError, ValueError):
+            dwell_seconds = self._dwell_seconds
+        self._mission_dwell_seconds = max(0.0, min(60.0, dwell_seconds))
+        self._waypoint_index = 0
+        self._dwell_until = 0.0
+        self._last_goal = None
+        if self._goal_handle is not None:
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+            self._goal_handle = None
+        self._publish_state('MISSION_ACCEPTED')
+
+    def _active_route(self):
+        if self._cloud_mission_configured:
+            return self._cloud_route, self._cloud_mission_active, self._patrol_mode
+        if self._route_total > 0 and len(self._route) >= self._route_total:
+            route = [self._route[index] for index in range(self._route_total)]
+            patrol = 'LOOP' if self._sensor.get('loop_enable') else 'ONCE'
+            return route, bool(self._sensor.get('navigation_active')), patrol
+        return [], False, 'ONCE'
+
+    def _advance_waypoint(self, route_total, patrol_mode):
+        if patrol_mode == 'PING_PONG' and route_total > 1:
+            next_index = self._waypoint_index + self._patrol_direction
+            if next_index < 0 or next_index >= route_total:
+                self._patrol_direction *= -1
+                next_index = self._waypoint_index + self._patrol_direction
+            self._waypoint_index = next_index
+            return True
+        if self._waypoint_index + 1 < route_total:
+            self._waypoint_index += 1
+            return True
+        if patrol_mode == 'LOOP' and route_total > 1:
+            self._waypoint_index = 0
+            return True
+        return False
 
     def _heading(self):
         if self._sensor.get('gnss_heading_valid'):
@@ -152,10 +244,12 @@ class GpsRosController(Node):
         if heading is None:
             self._stop('HEADING_INVALID')
             return
-        if self._route_total <= 0 or len(self._route) < self._route_total:
+        route, mission_active, patrol_mode = self._active_route()
+        route_total = len(route)
+        if route_total <= 0:
             self._stop('ROUTE_INCOMPLETE')
             return
-        if not self._sensor.get('navigation_active'):
+        if not mission_active:
             self._stop('MISSION_INACTIVE')
             return
         pose = self._robot_pose()
@@ -172,19 +266,20 @@ class GpsRosController(Node):
 
         current_lat = float(self._sensor['latitude'])
         current_lon = float(self._sensor['longitude'])
-        target_lat, target_lon = self._route[self._waypoint_index]
+        if self._waypoint_index >= route_total:
+            self._waypoint_index = 0
+        target_lat, target_lon = route[self._waypoint_index]
         distance, bearing = distance_and_bearing(
             current_lat, current_lon, target_lat, target_lon)
 
         if distance <= self._arrival_radius:
-            if self._waypoint_index + 1 < self._route_total:
-                self._waypoint_index += 1
-            elif self._sensor.get('loop_enable') and self._route_total > 1:
-                self._waypoint_index = 0
-            else:
+            if not self._advance_waypoint(route_total, patrol_mode):
+                self._cloud_mission_active = False
                 self._stop('MISSION_COMPLETE')
                 return
-            self._dwell_until = now + self._dwell_seconds
+            dwell = (self._mission_dwell_seconds if self._cloud_mission_active
+                     else self._dwell_seconds)
+            self._dwell_until = now + dwell
             self._last_goal = None
             self._stop('WAYPOINT_REACHED')
             return
@@ -254,7 +349,10 @@ class GpsRosController(Node):
         payload = {
             'state': state, 'control_enabled': self._control_enabled,
             'waypoint_index': self._waypoint_index,
-            'waypoint_total': self._route_total,
+            'waypoint_total': (len(self._cloud_route) if self._cloud_mission_configured
+                               else self._route_total),
+            'mission_source': ('WECHAT_GPS' if self._cloud_mission_configured else 'STM32'),
+            'patrol_mode': self._patrol_mode if self._cloud_mission_configured else None,
             'heading_source': heading_source,
             'distance_to_target': distance, 'target_bearing': bearing,
             'fused_heading': heading, 'heading_error': heading_error,
