@@ -61,6 +61,7 @@ class Stm32Bridge(Node):
         self.declare_parameter('read_hz', 100.0)
         self.declare_parameter('nav_linear_sign', -1.0)
         self.declare_parameter('nav_angular_sign', -1.0)
+        self.declare_parameter('min_effective_angular', 0.28)
         self.declare_parameter('nav_cmd_timeout', 0.5)
         self.declare_parameter('remote_cmd_timeout', 0.5)
 
@@ -68,6 +69,8 @@ class Stm32Bridge(Node):
         baudrate = int(self.get_parameter('baudrate').value)
         self._nav_linear_sign = float(self.get_parameter('nav_linear_sign').value)
         self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
+        self._min_effective_angular = max(
+            0.0, float(self.get_parameter('min_effective_angular').value))
         self._nav_timeout = float(self.get_parameter('nav_cmd_timeout').value)
         self._remote_timeout = float(self.get_parameter('remote_cmd_timeout').value)
         self.ser = serial.Serial(port, baudrate, timeout=0)
@@ -107,7 +110,8 @@ class Stm32Bridge(Node):
         self.create_timer(1.0 / send_hz, self._send)
         self.create_timer(1.0 / read_hz, self._read)
         self.get_logger().info(
-            f'STM32 bridge ready: {port}@{baudrate}, tx={send_hz}Hz rx={read_hz}Hz')
+            f'STM32 bridge ready: {port}@{baudrate}, tx={send_hz}Hz rx={read_hz}Hz, '
+            f'min_wz={self._min_effective_angular:.2f}rad/s')
 
     def _on_mode(self, msg):
         if msg.data not in (MODE_GPS_ROS, MODE_REMOTE, MODE_INDOOR, MODE_GPS_ONLY):
@@ -219,6 +223,7 @@ class Stm32Bridge(Node):
                            if self._nav_cmd.linear.x >= 0.0 else 1.0)
             vx = self._nav_cmd.linear.x * speed_scale * self._nav_linear_sign
             wz = self._nav_cmd.angular.z * self._nav_angular_sign
+        wz = self._compensate_angular_deadzone(wz)
         # GPS_ONLY deliberately receives zero velocity; STM32 owns its controller.
         data = struct.pack(TX_FMT, self._mode, vx, wz)
         try:
@@ -227,6 +232,12 @@ class Stm32Bridge(Node):
                 self.ser.write(self._gps_route_packets.popleft())
         except serial.SerialException as exc:
             self.get_logger().error(f'STM32 TX error: {exc}')
+
+    def _compensate_angular_deadzone(self, angular):
+        """Raise a non-zero turn command above the measured chassis dead zone."""
+        if 0.0 < abs(angular) < self._min_effective_angular:
+            return math.copysign(self._min_effective_angular, angular)
+        return angular
 
     def _read(self):
         try:
