@@ -31,9 +31,10 @@ import paho.mqtt.client as mqtt
 
 
 # Mode constants (sync with STM32)
-MODE_GPS    = 1
+MODE_GPS_ROS = 1
 MODE_REMOTE = 2
 MODE_INDOOR = 3
+MODE_GPS_ONLY = 4
 
 
 class MqttBridge(Node):
@@ -97,6 +98,8 @@ class MqttBridge(Node):
         self._mode = MODE_REMOTE    # safe startup: remain stopped until commanded
         self._speed_pct = 50        # speed percentage (0-100), default 50
         self._last_gps_publish = 0.0
+        self._gps_ros_state = {}
+        self._stm32_state = {}
 
         # ── TF buffer ───────────────────────────────────────────────
         from tf2_ros import Buffer, TransformListener
@@ -116,6 +119,8 @@ class MqttBridge(Node):
         self.create_subscription(String, '/indoor/map', self._on_indoor_map, 1)
         self.create_subscription(String, '/indoor/path', self._on_indoor_path, 5)
         self.create_subscription(String, '/indoor/mission_state', self._on_indoor_mission_state, 10)
+        self.create_subscription(String, '/gps_ros/state', self._on_gps_ros_state, 10)
+        self.create_subscription(String, '/stm32/sensors', self._on_stm32_sensors, 10)
 
         # Publish initial mode
         self._mode_pub.publish(Int8(data=self._mode))
@@ -176,7 +181,7 @@ class MqttBridge(Node):
         cmd = data.get('command', '').upper()
         spd = data.get('speed', self._speed_pct)
 
-        if cmd in ('GPS', 'REMOTE', 'INDOOR', 'LINE'):
+        if cmd in ('GPS', 'GPS_ROS', 'GPS_ONLY', 'REMOTE', 'INDOOR', 'LINE'):
             self._handle_mode_switch(cmd)
 
         elif cmd == 'EMERGENCY':
@@ -217,7 +222,9 @@ class MqttBridge(Node):
 
     def _handle_mode_switch(self, cmd: str):
         mode_map = {
-            'GPS': MODE_GPS,
+            'GPS': MODE_GPS_ROS,       # Backward-compatible alias.
+            'GPS_ROS': MODE_GPS_ROS,
+            'GPS_ONLY': MODE_GPS_ONLY,
             'REMOTE': MODE_REMOTE,
             'INDOOR': MODE_INDOOR,
             'LINE': MODE_INDOOR,  # Backward-compatible alias.
@@ -230,7 +237,7 @@ class MqttBridge(Node):
             self.get_logger().info(f'[云] 模式切换 → {cmd} (mode={self._mode})')
         else:
             # Same mode — still respond with pose for GPS
-            if cmd == 'GPS':
+            if cmd in ('GPS', 'GPS_ROS'):
                 self._publish_pose()
 
     # ── Remote movement → /remote_cmd_vel ──────────────────────────────
@@ -303,6 +310,26 @@ class MqttBridge(Node):
     def _on_indoor_mission_state(self, msg: String):
         self._publish_ros_json(self._mission_pub_topic, msg, retain=True)
 
+    def _on_gps_ros_state(self, msg: String):
+        try:
+            self._gps_ros_state = json.loads(msg.data)
+        except (TypeError, ValueError):
+            self._gps_ros_state = {}
+
+    def _on_stm32_sensors(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        self._stm32_state = {
+            'stm32_mode': data.get('stm32_mode'),
+            'gps_valid': data.get('gps_valid', False),
+            'satellites': data.get('satellites', 0),
+            'fix_quality': data.get('fix_quality', 0),
+            'heading_source_available': bool(
+                data.get('gnss_heading_valid') or data.get('mag_valid')),
+        }
+
     # ── Outgoing pose publisher ────────────────────────────────────────
 
     def _publish_pose(self):
@@ -311,11 +338,17 @@ class MqttBridge(Node):
             return
 
         pose = self._get_robot_pose()
+        reported_mode = self._stm32_state.get('stm32_mode')
+        if reported_mode not in (MODE_GPS_ROS, MODE_REMOTE, MODE_INDOOR, MODE_GPS_ONLY):
+            reported_mode = 0
         if pose is None:
             payload = json.dumps({
                 'robot_id': 'robot_001',
                 'online': True,
-                'mode': self._mode,
+                'mode': reported_mode,
+                'requested_mode': self._mode,
+                'gps_ros_state': self._gps_ros_state,
+                **self._stm32_state,
                 'timestamp': time.time(),
             })
             self._mqtt.publish(self._pub_topic, payload, qos=1)
@@ -330,7 +363,10 @@ class MqttBridge(Node):
             'x': round(x, 4),
             'y': round(y, 4),
             'yaw': round(math.degrees(yaw), 2),
-            'mode': self._mode,
+            'mode': reported_mode,
+            'requested_mode': self._mode,
+            'gps_ros_state': self._gps_ros_state,
+            **self._stm32_state,
             'timestamp': time.time(),
         })
         self._mqtt.publish(self._pub_topic, payload, qos=1)

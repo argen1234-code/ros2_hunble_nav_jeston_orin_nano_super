@@ -196,10 +196,12 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'lookahead_distance': lookahead,
-            'update_interval': 1.0,
-            'min_goal_translation': 0.35,
-            'min_goal_yaw_deg': 10.0,
-            'require_valid_gps': True,
+            'update_interval': 0.5,
+            'arrival_radius': 1.0,
+            'waypoint_dwell': 5.0,
+            'sensor_timeout': 0.75,
+            'min_goal_translation': 0.30,
+            'min_goal_yaw_deg': 8.0,
         }],
     )
 
