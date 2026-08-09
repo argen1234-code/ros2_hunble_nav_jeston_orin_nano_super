@@ -29,7 +29,7 @@ class IndoorMissionManager(Node):
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_timer(0.2, self._tick)
 
-        self._mode = 1
+        self._mode = 2
         self._active = False
         self._goal_active = False
         self._goal_handle = None

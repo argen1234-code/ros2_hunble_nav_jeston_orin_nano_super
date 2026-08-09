@@ -140,6 +140,20 @@ def generate_launch_description():
         name='controller_server',
         output='screen',
         parameters=[nav2_params_file],
+        # Smooth the raw controller output before it reaches the chassis.
+        remappings=[('/cmd_vel', '/cmd_vel_nav')],
+    )
+
+    velocity_smoother_node = Node(
+        package='nav2_velocity_smoother',
+        executable='velocity_smoother',
+        name='velocity_smoother',
+        output='screen',
+        parameters=[nav2_params_file],
+        remappings=[
+            ('cmd_vel', '/cmd_vel_nav'),
+            ('cmd_vel_smoothed', '/cmd_vel'),
+        ],
     )
 
     behavior_node = Node(
@@ -182,6 +196,10 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'lookahead_distance': lookahead,
+            'update_interval': 1.0,
+            'min_goal_translation': 0.35,
+            'min_goal_yaw_deg': 10.0,
+            'require_valid_gps': True,
         }],
     )
 
@@ -264,6 +282,7 @@ def generate_launch_description():
         behavior_node,
         bt_navigator_node,
         waypoint_node,
+        velocity_smoother_node,
         lifecycle_nav_node,
         virtual_goal_node,
         stm32_bridge_node,

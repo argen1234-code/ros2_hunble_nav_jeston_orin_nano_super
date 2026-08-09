@@ -64,6 +64,7 @@ class Stm32Bridge(Node):
         self.declare_parameter('nav_linear_sign', -1.0)
         self.declare_parameter('nav_angular_sign', -1.0)
         self.declare_parameter('nav_cmd_timeout', 0.5)
+        self.declare_parameter('remote_cmd_timeout', 0.5)
 
         port = self.get_parameter('port').value
         baudrate = self.get_parameter('baudrate').value
@@ -72,6 +73,8 @@ class Stm32Bridge(Node):
         self._nav_linear_sign = float(self.get_parameter('nav_linear_sign').value)
         self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
         self._nav_cmd_timeout = float(self.get_parameter('nav_cmd_timeout').value)
+        self._remote_cmd_timeout = float(
+            self.get_parameter('remote_cmd_timeout').value)
 
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0)
@@ -83,10 +86,11 @@ class Stm32Bridge(Node):
         self._rx_buf = bytearray()
 
         # ── Cached latest values ───────────────────────────────────
-        self._mode = MODE_GPS
+        self._mode = MODE_REMOTE
         self._nav_cmd_vel = Twist()       # from /cmd_vel (Nav2)
         self._remote_cmd_vel = Twist()    # from /remote_cmd_vel (MQTT)
         self._nav_cmd_time = 0.0
+        self._remote_cmd_time = 0.0
 
         # ── Subscriptions ───────────────────────────────────────────
         self._mode_sub = self.create_subscription(
@@ -117,6 +121,7 @@ class Stm32Bridge(Node):
 
     def _on_remote_cmd_vel(self, msg: Twist):
         self._remote_cmd_vel = msg
+        self._remote_cmd_time = time.monotonic()
 
     # ── TX: Jetson → STM32 ─────────────────────────────────────────
 
@@ -124,10 +129,14 @@ class Stm32Bridge(Node):
         """Read /cmd_vel or /remote_cmd_vel based on mode, pack and send."""
         now = time.monotonic()
         if self._mode == MODE_REMOTE:
-            # MQTT remote commands are already expressed in the STM32
-            # chassis sign convention; keep their known-good mapping.
-            vx = self._remote_cmd_vel.linear.x
-            vz = self._remote_cmd_vel.angular.z
+            if now - self._remote_cmd_time <= self._remote_cmd_timeout:
+                # MQTT remote commands are already expressed in the STM32
+                # chassis sign convention; keep their known-good mapping.
+                vx = self._remote_cmd_vel.linear.x
+                vz = self._remote_cmd_vel.angular.z
+            else:
+                vx = 0.0
+                vz = 0.0
         else:
             if now - self._nav_cmd_time <= self._nav_cmd_timeout:
                 # Nav2 uses REP-103 (+x forward, +z left), while this chassis
@@ -181,7 +190,7 @@ class Stm32Bridge(Node):
             lon     = struct.unpack('<f', frame[10:14])[0]
             del self._rx_buf[:RX_FRAME_LEN]
 
-            self.get_logger().info(
+            self.get_logger().debug(
                 f'RX: heading={heading:.1f}° lat={lat:.6f} lon={lon:.6f}')
 
             self._heading_pub.publish(Float32(data=heading))

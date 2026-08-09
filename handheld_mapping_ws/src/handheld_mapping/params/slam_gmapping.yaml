@@ -1,6 +1,10 @@
 /slam_gmapping:
   ros__parameters:
-    angularUpdate: 0.5
+    # Tmini Plus: ~404 beams/scan at 10 Hz. RF2O provides a good short-term
+    # motion prior, so update often enough for crisp corners without forcing
+    # a full particle-filter update for every scan.
+    throttle_scans: 1
+    angularUpdate: 0.10
     astep: 0.05
     base_frame: base_footprint
     map_frame: map
@@ -10,17 +14,19 @@
     kernelSize: 1
     lasamplerange: 0.005
     lasamplestep: 0.005
-    linearUpdate: 1.0
+    linearUpdate: 0.20
     llsamplerange: 0.01
     llsamplestep: 0.01
     lsigma: 0.075
     lskip: 0
-    lstep: 0.01
-    map_update_interval: 2.0
-    maxRange: 6.0
-    maxUrange: 4.0
-    minimum_score: 0.0
-    occ_thresh: 0.35
+    lstep: 0.05
+    map_update_interval: 1.0
+    # Keep the physical no-return range, but only use the most reliable
+    # indoor portion of the scan for matching.
+    maxRange: 11.99
+    maxUrange: 8.0
+    minimum_score: 30.0
+    occ_thresh: 0.25
     ogain: 3.0
     particles: 30
     qos_overrides:
@@ -38,11 +44,13 @@
           reliability: reliable
     resampleThreshold: 0.5
     sigma: 0.05
-    srr: 0.1
-    srt: 0.2
-    str: 0.1
-    stt: 0.2
-    temporalUpdate: 1.0
+    # RF2O is considerably better than wheel-only odometry, so avoid adding
+    # excessive artificial motion noise while retaining tolerance to slip.
+    srr: 0.05
+    srt: 0.10
+    str: 0.05
+    stt: 0.10
+    temporalUpdate: 0.50
     transform_publish_period: 0.05
     use_sim_time: false
     xmax: 10.0

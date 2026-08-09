@@ -94,7 +94,7 @@ class MqttBridge(Node):
         self._max_angular = self.get_parameter('max_angular').value
 
         # ── State ───────────────────────────────────────────────────
-        self._mode = MODE_GPS       # current robot mode
+        self._mode = MODE_REMOTE    # safe startup: remain stopped until commanded
         self._speed_pct = 50        # speed percentage (0-100), default 50
         self._last_gps_publish = 0.0
 

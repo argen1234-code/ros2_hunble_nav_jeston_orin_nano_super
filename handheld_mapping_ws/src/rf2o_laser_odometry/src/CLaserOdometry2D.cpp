@@ -273,7 +273,7 @@ bool CLaserOdometry2D::odometryCalculation(const sensor_msgs::msg::LaserScan& sc
 
   // Get computation time 
   auto m_runtime = get_clock()->now() - start;
-  RCLCPP_INFO(get_logger(), "execution time (ms): %f",
+  RCLCPP_DEBUG(get_logger(), "execution time (ms): %f",
                 m_runtime.seconds()*double(1000));
 
   // Update poses with the new odom
@@ -966,7 +966,7 @@ void CLaserOdometry2D::PoseUpdate()
   kai_loc_old_(1) = -kai_abs_(0)*std::sin(phi) + kai_abs_(1)*std::cos(phi);
   kai_loc_old_(2) =  kai_abs_(2);
 
-  RCLCPP_INFO(get_logger(), "Laser odom [x,y,yaw]=[%f %f %f]",
+  RCLCPP_DEBUG(get_logger(), "Laser odom [x,y,yaw]=[%f %f %f]",
                 laser_pose_.translation()(0),
                 laser_pose_.translation()(1),
                 rf2o::getYaw(laser_pose_.rotation()));
@@ -974,7 +974,7 @@ void CLaserOdometry2D::PoseUpdate()
   // Compose Transformations (robot odom)
   robot_pose_ = laser_pose_ * laser_pose_on_robot_inv_;
 
-  RCLCPP_INFO(get_logger(), "Robot-base odom [x,y,yaw]=[%f %f %f]",
+  RCLCPP_DEBUG(get_logger(), "Robot-base odom [x,y,yaw]=[%f %f %f]",
                 robot_pose_.translation()(0),
                 robot_pose_.translation()(1),
                 rf2o::getYaw(robot_pose_.rotation()));

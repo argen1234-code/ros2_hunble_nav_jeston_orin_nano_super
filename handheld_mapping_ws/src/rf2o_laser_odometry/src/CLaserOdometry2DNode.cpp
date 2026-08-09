@@ -175,8 +175,10 @@ void CLaserOdometry2DNode::process()
   }
   else
   {
-    // This is a warning. We depend on laser scans, so no meaning running faster than scan freq.
-    RCLCPP_WARN(get_logger(), "Waiting for laser_scans....");
+    // Startup and an occasional missed scan are normal. Throttle this message
+    // to avoid wasting CPU and disk bandwidth at the 10 Hz processing rate.
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000, "Waiting for laser_scans....");
   }
 }
 

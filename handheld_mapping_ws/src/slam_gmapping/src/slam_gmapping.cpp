@@ -58,56 +58,62 @@ void SlamGmapping::init() {
     got_first_scan_ = false; //false
     got_map_ = false;
 
-    throttle_scans_ = 1;
-    base_frame_ = "base_link";
-    map_frame_ = "map";
-    odom_frame_ = "odom";
-    transform_publish_period_ = 0.05;
+    // Declare every tuning parameter so ROS 2 parameter files actually take
+    // effect.  The previous port only stored hard-coded defaults here, which
+    // meant the supplied slam_gmapping.yaml was silently ignored.
+    throttle_scans_ = declare_parameter<int>("throttle_scans", 1);
+    base_frame_ = declare_parameter<std::string>("base_frame", "base_footprint");
+    map_frame_ = declare_parameter<std::string>("map_frame", "map");
+    odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
+    transform_publish_period_ = declare_parameter<double>("transform_publish_period", 0.05);
 
-    map_update_interval_ = tf2::durationFromSec(0.5);
-    maxUrange_ = 80.0;  maxRange_ = 0.0;
-    minimum_score_ = 0;
-    sigma_ = 0.05;
-    kernelSize_ = 1;
-    lstep_ = 0.05;
-    astep_ = 0.05;
-    iterations_ = 5;
-    lsigma_ = 0.075;
-    ogain_ = 3.0;
-    lskip_ = 0;
-    srr_ = 0.1;
-    srt_ = 0.2;
-    str_ = 0.1;
-    stt_ = 0.2;
-    linearUpdate_ = 1.0;
-    angularUpdate_ = 0.5;
-    temporalUpdate_ = 1.0;
-    resampleThreshold_ = 0.5;
-    particles_ = 30;
-    xmin_ = -10.0;
-    ymin_ = -10.0;
-    xmax_ = 10.0;
-    ymax_ = 10.0;
-    delta_ = 0.05;
-    occ_thresh_ = 0.25;
-    llsamplerange_ = 0.01;
-    llsamplestep_ = 0.01;
-    lasamplerange_ = 0.005;
-    lasamplestep_ = 0.005;
+    map_update_interval_ = tf2::durationFromSec(
+        declare_parameter<double>("map_update_interval", 1.0));
+    maxRange_ = declare_parameter<double>("maxRange", 11.99);
+    maxUrange_ = declare_parameter<double>("maxUrange", 8.0);
+    minimum_score_ = declare_parameter<double>("minimum_score", 30.0);
+    sigma_ = declare_parameter<double>("sigma", 0.05);
+    kernelSize_ = declare_parameter<int>("kernelSize", 1);
+    lstep_ = declare_parameter<double>("lstep", 0.05);
+    astep_ = declare_parameter<double>("astep", 0.05);
+    iterations_ = declare_parameter<int>("iterations", 5);
+    lsigma_ = declare_parameter<double>("lsigma", 0.075);
+    ogain_ = declare_parameter<double>("ogain", 3.0);
+    lskip_ = declare_parameter<int>("lskip", 0);
+    srr_ = declare_parameter<double>("srr", 0.05);
+    srt_ = declare_parameter<double>("srt", 0.10);
+    str_ = declare_parameter<double>("str", 0.05);
+    stt_ = declare_parameter<double>("stt", 0.10);
+    linearUpdate_ = declare_parameter<double>("linearUpdate", 0.20);
+    angularUpdate_ = declare_parameter<double>("angularUpdate", 0.10);
+    temporalUpdate_ = declare_parameter<double>("temporalUpdate", 0.50);
+    resampleThreshold_ = declare_parameter<double>("resampleThreshold", 0.5);
+    particles_ = declare_parameter<int>("particles", 30);
+    xmin_ = declare_parameter<double>("xmin", -10.0);
+    ymin_ = declare_parameter<double>("ymin", -10.0);
+    xmax_ = declare_parameter<double>("xmax", 10.0);
+    ymax_ = declare_parameter<double>("ymax", 10.0);
+    delta_ = declare_parameter<double>("delta", 0.05);
+    occ_thresh_ = declare_parameter<double>("occ_thresh", 0.25);
+    llsamplerange_ = declare_parameter<double>("llsamplerange", 0.01);
+    llsamplestep_ = declare_parameter<double>("llsamplestep", 0.01);
+    lasamplerange_ = declare_parameter<double>("lasamplerange", 0.005);
+    lasamplestep_ = declare_parameter<double>("lasamplestep", 0.005);
     tf_delay_ = transform_publish_period_;
 }
 
 void SlamGmapping::startLiveSlam() {
     entropy_publisher_ = this->create_publisher<std_msgs::msg::Float64>("entropy", rclcpp::SystemDefaultsQoS());
-    sst_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("map", rclcpp::SystemDefaultsQoS());
-    sstm_ = this->create_publisher<nav_msgs::msg::MapMetaData>("map_metadata", rclcpp::SystemDefaultsQoS());
+    const auto map_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    sst_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("map", map_qos);
+    sstm_ = this->create_publisher<nav_msgs::msg::MapMetaData>("map_metadata", map_qos);
     scan_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::LaserScan>>
             (node_, "scan", rclcpp::SensorDataQoS().get_rmw_qos_profile());
 //    sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
 //        "scan", rclcpp::SensorDataQoS(),
 //        std::bind(&SlamGmapping::laserCallback, this, std::placeholders::_1));
     scan_filter_ = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::LaserScan>>
-            (*scan_filter_sub_, *buffer_, odom_frame_, 10, node_);
+            (*scan_filter_sub_, *buffer_, odom_frame_, 20, node_);
     scan_filter_->registerCallback(std::bind(&SlamGmapping::laserCallback, this, std::placeholders::_1));
     transform_thread_ = std::make_shared<std::thread>
             (std::bind(&SlamGmapping::publishLoop, this, transform_publish_period_));
@@ -118,7 +124,14 @@ void SlamGmapping::publishLoop(double transform_publish_period){
         return;
     rclcpp::Rate r(1.0 / transform_publish_period);
     while (rclcpp::ok()) {
-        publishTransform();
+        try {
+            publishTransform();
+        } catch (const rclcpp::exceptions::RCLError &) {
+            if (!rclcpp::ok()) {
+                break;
+            }
+            throw;
+        }
         r.sleep();
     }
 }
@@ -249,9 +262,16 @@ bool SlamGmapping::initMapper(const sensor_msgs::msg::LaserScan::ConstSharedPtr 
 
     GMapping::OrientedPoint gmap_pose(0, 0, 0);
 
-    // setting maxRange and maxUrange here so we can set a reasonable default
-    maxRange_ = scan->range_max - 0.01;
-    maxUrange_ = maxRange_;
+    // Respect configured indoor ranges while clamping them to the physical
+    // sensor limit.  Long Tmini returns are useful as no-return information,
+    // but using all 12 m for scan matching makes indoor maps noisier.
+    const double sensor_max_range = scan->range_max - 0.01;
+    if (maxRange_ <= 0.0 || maxRange_ > sensor_max_range) {
+        maxRange_ = sensor_max_range;
+    }
+    if (maxUrange_ <= 0.0 || maxUrange_ > maxRange_) {
+        maxUrange_ = maxRange_;
+    }
 
     // The laser must be called "FLASER".
     // We pass in the absolute value of the computed angle increment, on the
