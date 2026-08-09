@@ -29,6 +29,7 @@ Usage:
 """
 
 import struct
+import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
@@ -60,11 +61,17 @@ class Stm32Bridge(Node):
         self.declare_parameter('baudrate', 115200)
         self.declare_parameter('send_hz', 50.0)
         self.declare_parameter('read_hz', 100.0)
+        self.declare_parameter('nav_linear_sign', -1.0)
+        self.declare_parameter('nav_angular_sign', -1.0)
+        self.declare_parameter('nav_cmd_timeout', 0.5)
 
         port = self.get_parameter('port').value
         baudrate = self.get_parameter('baudrate').value
         send_hz = self.get_parameter('send_hz').value
         read_hz = self.get_parameter('read_hz').value
+        self._nav_linear_sign = float(self.get_parameter('nav_linear_sign').value)
+        self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
+        self._nav_cmd_timeout = float(self.get_parameter('nav_cmd_timeout').value)
 
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0)
@@ -79,6 +86,7 @@ class Stm32Bridge(Node):
         self._mode = MODE_GPS
         self._nav_cmd_vel = Twist()       # from /cmd_vel (Nav2)
         self._remote_cmd_vel = Twist()    # from /remote_cmd_vel (MQTT)
+        self._nav_cmd_time = 0.0
 
         # ── Subscriptions ───────────────────────────────────────────
         self._mode_sub = self.create_subscription(
@@ -105,6 +113,7 @@ class Stm32Bridge(Node):
 
     def _on_nav_cmd_vel(self, msg: Twist):
         self._nav_cmd_vel = msg
+        self._nav_cmd_time = time.monotonic()
 
     def _on_remote_cmd_vel(self, msg: Twist):
         self._remote_cmd_vel = msg
@@ -113,13 +122,21 @@ class Stm32Bridge(Node):
 
     def _send_to_stm32(self):
         """Read /cmd_vel or /remote_cmd_vel based on mode, pack and send."""
+        now = time.monotonic()
         if self._mode == MODE_REMOTE:
+            # MQTT remote commands are already expressed in the STM32
+            # chassis sign convention; keep their known-good mapping.
             vx = self._remote_cmd_vel.linear.x
             vz = self._remote_cmd_vel.angular.z
         else:
-            # GPS or INDOOR: use Nav2 cmd_vel
-            vx = self._nav_cmd_vel.linear.x
-            vz = self._nav_cmd_vel.angular.z
+            if now - self._nav_cmd_time <= self._nav_cmd_timeout:
+                # Nav2 uses REP-103 (+x forward, +z left), while this chassis
+                # uses negative Vx for forward and negative Wz for left.
+                vx = self._nav_cmd_vel.linear.x * self._nav_linear_sign
+                vz = self._nav_cmd_vel.angular.z * self._nav_angular_sign
+            else:
+                vx = 0.0
+                vz = 0.0
 
         data = struct.pack(TX_FMT, self._mode, vx, vz)
         checksum = self._xor(data)
