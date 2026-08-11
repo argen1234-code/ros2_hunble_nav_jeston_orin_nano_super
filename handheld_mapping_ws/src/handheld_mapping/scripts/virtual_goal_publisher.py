@@ -55,6 +55,9 @@ class GpsRosController(Node):
         self.declare_parameter('scan_timeout', 0.60)
         self.declare_parameter('cruise_speed', 0.22)
         self.declare_parameter('minimum_drive_speed', 0.07)
+        # GNSS/magnetometer heading follows the pure-GPS chassis front. The
+        # LiDAR/indoor front is physically opposite on this platform.
+        self.declare_parameter('heading_offset_deg', 180.0)
         self.declare_parameter('heading_kp', 1.15)
         self.declare_parameter('max_angular_speed', 0.85)
         self.declare_parameter('turn_in_place_angle_deg', 55.0)
@@ -72,6 +75,8 @@ class GpsRosController(Node):
         self._cruise_speed = float(self.get_parameter('cruise_speed').value)
         self._minimum_drive_speed = float(
             self.get_parameter('minimum_drive_speed').value)
+        self._heading_offset = float(
+            self.get_parameter('heading_offset_deg').value)
         self._heading_kp = float(self.get_parameter('heading_kp').value)
         self._max_angular = float(self.get_parameter('max_angular_speed').value)
         self._turn_in_place_angle = float(
@@ -104,6 +109,7 @@ class GpsRosController(Node):
         self._dwell_until = 0.0
         self._control_enabled = False
         self._avoid_direction = 0
+        self._last_raw_heading = None
         self._last_state_signature = None
         self._last_state_publish = 0.0
 
@@ -241,11 +247,16 @@ class GpsRosController(Node):
         if self._sensor.get('gnss_heading_valid'):
             value = float(self._sensor['gnss_heading'])
             if math.isfinite(value):
-                return value % 360.0, 'GNSS_DUAL'
+                self._last_raw_heading = value % 360.0
+                return ((value + self._heading_offset) % 360.0,
+                        'GNSS_DUAL_LIDAR_FRONT')
         if self._sensor.get('mag_valid'):
             value = float(self._sensor['mag_yaw'])
             if math.isfinite(value):
-                return value % 360.0, 'QMC5883'
+                self._last_raw_heading = value % 360.0
+                return ((value + self._heading_offset) % 360.0,
+                        'QMC5883_LIDAR_FRONT')
+        self._last_raw_heading = None
         return None, 'NONE'
 
     def _sector_clearance(self, start_angle, end_angle):
@@ -425,6 +436,8 @@ class GpsRosController(Node):
             'mission_source': ('WECHAT_GPS' if self._cloud_mission_configured else 'STM32'),
             'patrol_mode': self._patrol_mode if self._cloud_mission_configured else None,
             'heading_source': heading_source,
+            'raw_heading': self._last_raw_heading,
+            'heading_offset_deg': self._heading_offset,
             'distance_to_target': distance,
             'target_bearing': bearing,
             'fused_heading': heading,

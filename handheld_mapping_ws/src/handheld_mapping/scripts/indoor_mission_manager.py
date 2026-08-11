@@ -307,10 +307,10 @@ class IndoorMissionManager(Node):
                 angular = self._turn_direction * abs(angular)
             else:
                 self._turn_direction = 0
-            if near_goal and abs(angle_error) > self._goal_yaw_tolerance:
-                # At the target position there is no translational motion to
-                # protect; use the requested 1.5x turn speed for final yaw
-                # alignment while retaining the same direction latch.
+            if ((near_goal and abs(angle_error) > self._goal_yaw_tolerance) or
+                    abs(angle_error) >= math.pi / 2.0):
+                # Use 1.5x angular speed for final yaw alignment and U-turns
+                # of 90 degrees or more, while retaining direction latching.
                 angular = self._clamp(
                     angular * self._final_turn_speed_scale,
                     self._max_angular * self._final_turn_speed_scale)

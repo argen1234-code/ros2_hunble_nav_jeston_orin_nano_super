@@ -230,9 +230,17 @@ def generate_launch_description():
             'waypoint_dwell': 5.0,
             'sensor_timeout': 0.75,
             'scan_timeout': 0.60,
-            'cruise_speed': 0.22,
-            'front_stop_distance': 0.42,
-            'front_slow_distance': 0.95,
+            # Fusion uses GPS waypoint/heading sources, but chassis direction
+            # and LiDAR avoidance match the verified indoor (LiDAR-front) mode.
+            'heading_offset_deg': 180.0,
+            'cruise_speed': 0.24,
+            'minimum_drive_speed': 0.08,
+            'max_angular_speed': 0.78,
+            'turn_in_place_angle_deg': 40.0,
+            'front_stop_distance': 0.34,
+            'front_slow_distance': 0.68,
+            'side_stop_distance': 0.30,
+            'obstacle_turn_speed': 1.36,
         }],
     )
 
@@ -245,6 +253,8 @@ def generate_launch_description():
         parameters=[{
             'port': stm32_port,
             'baudrate': stm32_baud,
+            'gps_ros_linear_sign': -1.0,
+            'gps_ros_angular_sign': -1.0,
         }],
     )
 

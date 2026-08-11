@@ -61,6 +61,10 @@ class Stm32Bridge(Node):
         self.declare_parameter('read_hz', 100.0)
         self.declare_parameter('nav_linear_sign', -1.0)
         self.declare_parameter('nav_angular_sign', -1.0)
+        # GPS+ROS uses the same LiDAR-front chassis convention as indoor mode.
+        # GPS_ONLY remains fully STM32-owned and is intentionally unaffected.
+        self.declare_parameter('gps_ros_linear_sign', -1.0)
+        self.declare_parameter('gps_ros_angular_sign', -1.0)
         # Measured on the differential chassis: ~0.40 rad/s is the first
         # repeatable turn command; keep margin for battery/load variation.
         self.declare_parameter('min_effective_angular', 0.42)
@@ -75,6 +79,10 @@ class Stm32Bridge(Node):
         baudrate = int(self.get_parameter('baudrate').value)
         self._nav_linear_sign = float(self.get_parameter('nav_linear_sign').value)
         self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
+        self._gps_ros_linear_sign = float(
+            self.get_parameter('gps_ros_linear_sign').value)
+        self._gps_ros_angular_sign = float(
+            self.get_parameter('gps_ros_angular_sign').value)
         self._min_effective_angular = max(
             0.0, float(self.get_parameter('min_effective_angular').value))
         self._angular_command_deadband = max(
@@ -277,8 +285,9 @@ class Stm32Bridge(Node):
             # longer consumes Nav2 commands, preventing stale planner output
             # from taking ownership of fusion mode.
             speed_scale = self._mode_speed[self._mode]
-            vx = self._gps_ros_cmd.linear.x * speed_scale * self._nav_linear_sign
-            wz = self._gps_ros_cmd.angular.z * self._nav_angular_sign
+            vx = (self._gps_ros_cmd.linear.x * speed_scale *
+                  self._gps_ros_linear_sign)
+            wz = self._gps_ros_cmd.angular.z * self._gps_ros_angular_sign
         wz = self._compensate_angular_deadzone(wz)
         # GPS_ONLY deliberately receives zero velocity; STM32 owns its controller.
         data = struct.pack(TX_FMT, self._mode, vx, wz)
