@@ -15,6 +15,7 @@ import time
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Int8, String
 
@@ -108,7 +109,10 @@ class GpsRosController(Node):
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(String, '/stm32/sensors', self._on_sensors, 10)
-        self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
+        # YDLidar publishes LaserScan with SensorDataQoS (best effort).
+        # Using the default reliable profile silently drops every scan.
+        self.create_subscription(
+            LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
         self.create_subscription(
             String, '/gps_ros/mission_command', self._on_mission_command, 10)
         self._cmd_pub = self.create_publisher(Twist, '/gps_ros/cmd_vel', 10)

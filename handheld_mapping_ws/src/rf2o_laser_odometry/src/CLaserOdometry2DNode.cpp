@@ -63,7 +63,9 @@ CLaserOdometry2DNode::CLaserOdometry2DNode(): Node("CLaserOdometry2DNode")
     initial_robot_pose.pose.pose.position.x = 0;
     initial_robot_pose.pose.pose.position.y = 0;
     initial_robot_pose.pose.pose.position.z = 0;
-    initial_robot_pose.pose.pose.orientation.w = 0;
+    // Identity quaternion. A zero quaternion is invalid and can leave the
+    // odom/base TF tree disconnected when no external pose is supplied.
+    initial_robot_pose.pose.pose.orientation.w = 1;
     initial_robot_pose.pose.pose.orientation.x = 0;
     initial_robot_pose.pose.pose.orientation.y = 0;
     initial_robot_pose.pose.pose.orientation.z = 0;
@@ -101,6 +103,10 @@ void CLaserOdometry2DNode::LaserCallBack(const sensor_msgs::msg::LaserScan::Shar
       setLaserPoseFromTf();
       rf2o_ref.init(last_scan, initial_robot_pose.pose.pose);
       rf2o_ref.first_laser_scan = false;
+      // Publish the identity odometry immediately. This keeps odom -> base
+      // available while the next scan pair establishes motion, so GMapping
+      // can initialize even when the robot starts completely still.
+      publish();
     }
   }
 }

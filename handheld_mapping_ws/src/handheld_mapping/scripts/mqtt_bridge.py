@@ -100,6 +100,11 @@ class MqttBridge(Node):
         self._last_gps_publish = 0.0
         self._gps_ros_state = {}
         self._stm32_state = {}
+        # MQTT QoS1 may redeliver a command. Keep a short-lived request cache
+        # so one tap in the mini-program cannot record/start the same point
+        # multiple times.
+        self._seen_requests = {}
+        self._request_dedup_ttl = 30.0
 
         # ── TF buffer ───────────────────────────────────────────────
         from tf2_ros import Buffer, TransformListener
@@ -172,6 +177,23 @@ class MqttBridge(Node):
         except json.JSONDecodeError:
             self.get_logger().warn(f'Non-JSON payload ignored: {payload}')
             return
+
+        request_id = str(data.get('request_id', '')).strip()
+        if request_id:
+            now = time.monotonic()
+            self._seen_requests = {
+                key: stamp for key, stamp in self._seen_requests.items()
+                if now - stamp < self._request_dedup_ttl
+            }
+            dedup_key = f"{data.get('command', '')}:{request_id}"
+            if dedup_key in self._seen_requests:
+                self.get_logger().warning(
+                    f'Ignoring duplicate MQTT command request_id={request_id}')
+                return
+            self._seen_requests[dedup_key] = now
+            if len(self._seen_requests) > 512:
+                oldest = min(self._seen_requests, key=self._seen_requests.get)
+                self._seen_requests.pop(oldest, None)
 
         if 'command' in data:
             self._handle_thing_command(data)

@@ -16,17 +16,43 @@ In RViz:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 import os
+import fcntl
+
+
+_INSTANCE_LOCK = None
+
+
+def _acquire_instance_lock(_context):
+    """Prevent two copies of the handheld stack from running concurrently."""
+    global _INSTANCE_LOCK
+    path = '/tmp/handheld_mapping_nav.lock'
+    lock = open(path, 'a+')
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock.seek(0)
+        owner = lock.read().strip()
+        lock.close()
+        owner_hint = f' (PID {owner})' if owner else ''
+        raise RuntimeError(
+            f'handheld_mapping is already running{owner_hint}; stop the '
+            'existing launch before starting another copy') from exc
+    lock.seek(0)
+    lock.truncate()
+    lock.write(str(os.getpid()))
+    lock.flush()
+    _INSTANCE_LOCK = lock
+    return []
 
 
 def generate_launch_description():
-
     # ── Launch arguments ──────────────────────────────────────────────
     lidar_model = LaunchConfiguration('lidar_model')
     lidar_port = LaunchConfiguration('lidar_port')
@@ -68,6 +94,9 @@ def generate_launch_description():
 
     nav2_params_file = PathJoinSubstitution([
         FindPackageShare('handheld_mapping'), 'params', 'nav2_params.yaml'])
+    bt_xml_file = PathJoinSubstitution([
+        FindPackageShare('handheld_mapping'), 'params',
+        'navigate_to_pose_w_replanning_and_recovery.xml'])
 
     # ── 1. LiDAR driver ──────────────────────────────────────────────
     ydlidar_node = Node(
@@ -75,6 +104,8 @@ def generate_launch_description():
         executable='ydlidar_ros2_driver_node',
         name='ydlidar_ros2_driver_node',
         output='screen',
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[lidar_params_file, {'port': lidar_port}],
     )
 
@@ -165,7 +196,10 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        parameters=[nav2_params_file],
+        parameters=[nav2_params_file, {
+            'default_nav_to_pose_bt_xml': bt_xml_file,
+            'default_nav_through_poses_bt_xml': bt_xml_file,
+        }],
     )
 
     waypoint_node = Node(
@@ -234,6 +268,26 @@ def generate_launch_description():
         executable='indoor_mission_manager',
         name='indoor_mission_manager',
         output='screen',
+        parameters=[{
+            'control_hz': 10.0,
+            'goal_radius': 0.30,
+            'goal_yaw_tolerance': 0.25,
+            'position_kp': 1.10,
+            'position_ki': 0.02,
+            'position_kd': 0.06,
+            'max_linear_speed': 0.24,
+            'angle_kp': 2.20,
+            'angle_ki': 0.04,
+            'angle_kd': 0.28,
+            'max_angular_speed': 0.78,
+            'final_turn_speed_scale': 1.5,
+            'turn_in_place_angle': 0.70,
+            'obstacle_turn_speed': 0.68,
+            'obstacle_turn_speed_scale': 2.0,
+            'front_stop_distance': 0.34,
+            'front_slow_distance': 0.68,
+            'scan_timeout': 0.80,
+        }],
     )
 
     # ── 9. Map saver ────────────────────────────────────────────────
@@ -270,6 +324,10 @@ def generate_launch_description():
         declare_stm32_port,
         declare_stm32_baud,
         declare_use_rviz,
+        # Execute only when a launch service actually starts. Keeping this out
+        # of generate_launch_description() lets `ros2 launch --show-args` and
+        # other launch-file introspection work while the stack is running.
+        OpaqueFunction(function=_acquire_instance_lock),
         ydlidar_node,
         tf_base_laser,
         tf_footprint_base,

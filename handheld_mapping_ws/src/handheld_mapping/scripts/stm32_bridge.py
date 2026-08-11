@@ -61,7 +61,11 @@ class Stm32Bridge(Node):
         self.declare_parameter('read_hz', 100.0)
         self.declare_parameter('nav_linear_sign', -1.0)
         self.declare_parameter('nav_angular_sign', -1.0)
-        self.declare_parameter('min_effective_angular', 0.28)
+        # Measured on the differential chassis: ~0.40 rad/s is the first
+        # repeatable turn command; keep margin for battery/load variation.
+        self.declare_parameter('min_effective_angular', 0.42)
+        self.declare_parameter('angular_command_deadband', 0.04)
+        self.declare_parameter('min_effective_linear', 0.08)
         self.declare_parameter('indoor_linear_gain', 1.35)
         self.declare_parameter('indoor_max_linear', 0.32)
         self.declare_parameter('nav_cmd_timeout', 0.5)
@@ -73,6 +77,10 @@ class Stm32Bridge(Node):
         self._nav_angular_sign = float(self.get_parameter('nav_angular_sign').value)
         self._min_effective_angular = max(
             0.0, float(self.get_parameter('min_effective_angular').value))
+        self._angular_command_deadband = max(
+            0.0, float(self.get_parameter('angular_command_deadband').value))
+        self._min_effective_linear = max(
+            0.0, float(self.get_parameter('min_effective_linear').value))
         self._indoor_linear_gain = max(
             1.0, float(self.get_parameter('indoor_linear_gain').value))
         self._indoor_max_linear = max(
@@ -83,9 +91,11 @@ class Stm32Bridge(Node):
         self._rx_buf = bytearray()
         self._mode = MODE_REMOTE
         self._nav_cmd = Twist()
+        self._direct_cmd = Twist()
         self._gps_ros_cmd = Twist()
         self._remote_cmd = Twist()
         self._nav_time = 0.0
+        self._direct_time = 0.0
         self._gps_ros_time = 0.0
         self._remote_time = 0.0
         self._gps_ros_enabled = False
@@ -99,6 +109,7 @@ class Stm32Bridge(Node):
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(Twist, '/cmd_vel', self._on_nav_cmd, 10)
+        self.create_subscription(Twist, '/direct_cmd_vel', self._on_direct_cmd, 10)
         self.create_subscription(Twist, '/gps_ros/cmd_vel', self._on_gps_ros_cmd, 10)
         self.create_subscription(Twist, '/remote_cmd_vel', self._on_remote_cmd, 10)
         self.create_subscription(
@@ -121,6 +132,8 @@ class Stm32Bridge(Node):
         self.get_logger().info(
             f'STM32 bridge ready: {port}@{baudrate}, tx={send_hz}Hz rx={read_hz}Hz, '
             f'min_wz={self._min_effective_angular:.2f}rad/s, '
+            f'wz_deadband={self._angular_command_deadband:.2f}rad/s, '
+            f'min_vx={self._min_effective_linear:.2f}m/s, '
             f'indoor_gain={self._indoor_linear_gain:.2f}, '
             f'indoor_max={self._indoor_max_linear:.2f}m/s')
 
@@ -131,6 +144,7 @@ class Stm32Bridge(Node):
         if msg.data != self._mode:
             # A mode change must send zero until that mode produces a fresh command.
             self._nav_time = 0.0
+            self._direct_time = 0.0
             self._gps_ros_time = 0.0
             self._remote_time = 0.0
         self._mode = msg.data
@@ -138,6 +152,10 @@ class Stm32Bridge(Node):
     def _on_nav_cmd(self, msg):
         self._nav_cmd = msg
         self._nav_time = time.monotonic()
+
+    def _on_direct_cmd(self, msg):
+        self._direct_cmd = msg
+        self._direct_time = time.monotonic()
 
     def _on_gps_ros_cmd(self, msg):
         self._gps_ros_cmd = msg
@@ -228,6 +246,15 @@ class Stm32Bridge(Node):
             # Preserve the already verified WeChat/chassis sign convention.
             vx = self._remote_cmd.linear.x
             wz = self._remote_cmd.angular.z
+        elif (self._mode == MODE_INDOOR and
+              now - self._direct_time <= self._nav_timeout):
+            # Indoor direct position/angle controller has exclusive command
+            # ownership; Nav2 output may remain active for visualization but
+            # must not overwrite the direct loop.
+            vx = self._direct_cmd.linear.x * self._nav_linear_sign
+            if abs(vx) > self._indoor_max_linear:
+                vx = math.copysign(self._indoor_max_linear, vx)
+            wz = self._direct_cmd.angular.z * self._nav_angular_sign
         elif self._mode == MODE_INDOOR and now - self._nav_time <= self._nav_timeout:
             # Indoor Nav2 REP-103 -> chassis sign convention.
             # Forward navigation follows the per-mode limit. Negative Nav2
@@ -240,6 +267,9 @@ class Stm32Bridge(Node):
             vx = self._nav_cmd.linear.x * speed_scale * self._nav_linear_sign
             if abs(vx) > self._indoor_max_linear:
                 vx = math.copysign(self._indoor_max_linear, vx)
+            if (0.0 < abs(vx) < self._min_effective_linear and
+                    abs(self._nav_cmd.linear.x) >= 0.04):
+                vx = math.copysign(self._min_effective_linear, vx)
             wz = self._nav_cmd.angular.z * self._nav_angular_sign
         elif (self._mode == MODE_GPS_ROS and self._gps_ros_enabled and
               now - self._gps_ros_time <= self._nav_timeout):
@@ -261,7 +291,9 @@ class Stm32Bridge(Node):
 
     def _compensate_angular_deadzone(self, angular):
         """Raise a non-zero turn command above the measured chassis dead zone."""
-        if 0.0 < abs(angular) < self._min_effective_angular:
+        if abs(angular) < self._angular_command_deadband:
+            return 0.0
+        if abs(angular) < self._min_effective_angular:
             return math.copysign(self._min_effective_angular, angular)
         return angular
 
