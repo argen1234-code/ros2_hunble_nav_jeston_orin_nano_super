@@ -244,6 +244,12 @@ class MqttBridge(Node):
                 self._remote_cmd_pub.publish(Twist())
                 self._mode = MODE_GPS_ONLY
                 self._mode_pub.publish(Int8(data=self._mode))
+            if cmd == 'GPS_ONLY_ROUTE_SET' and not (
+                    self._stm32_state.get('gps_valid', False) and
+                    self._stm32_state.get('mag_valid', False)):
+                self.get_logger().warning(
+                    '[云] 拒绝纯GPS巡航：GPS或磁力计无效')
+                return
             if cmd == 'GPS_ONLY_ROUTE_SET' and 'speed' in data:
                 self._publish_mode_speed(MODE_GPS_ONLY, data['speed'])
             self._gps_only_route_pub.publish(
@@ -397,6 +403,7 @@ class MqttBridge(Node):
         self._stm32_state = {
             'stm32_mode': data.get('stm32_mode'),
             'gps_valid': data.get('gps_valid', False),
+            'mag_valid': data.get('mag_valid', False),
             'satellites': data.get('satellites', 0),
             'fix_quality': data.get('fix_quality', 0),
             'gps_route_total': data.get('route_total', 0),
