@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 """
-Online SLAM Navigation — uses gmapping for real-time localization + Nav2 for path planning.
+Online SLAM Navigation — indoor Nav2 plus direct GPS/LiDAR outdoor control.
 
 No saved map needed. No AMCL. Gmapping provides both the /map topic and
-the map→odom TF transform. Nav2 planner + DWB controller generate /cmd_vel.
+the map→odom TF transform. Nav2 is reserved for indoor mode; GPS+ROS mode
+directly combines GPS heading and LaserScan without path planning.
 
 Usage:
   ros2 launch handheld_mapping handheld_nav.launch.py
@@ -31,7 +32,6 @@ def generate_launch_description():
     lidar_port = LaunchConfiguration('lidar_port')
     stm32_port = LaunchConfiguration('stm32_port')
     stm32_baud = LaunchConfiguration('stm32_baud')
-    lookahead = LaunchConfiguration('lookahead')
     use_rviz = LaunchConfiguration('use_rviz')
 
     declare_lidar_model = DeclareLaunchArgument(
@@ -53,10 +53,6 @@ def generate_launch_description():
     declare_stm32_baud = DeclareLaunchArgument(
         'stm32_baud', default_value='115200',
         description='STM32 serial baudrate')
-
-    declare_lookahead = DeclareLaunchArgument(
-        'lookahead', default_value='2.0',
-        description='Virtual goal lookahead distance (metres)')
 
     declare_use_rviz = DeclareLaunchArgument(
         'use_rviz', default_value='true',
@@ -188,20 +184,21 @@ def generate_launch_description():
         parameters=[nav2_params_file],
     )
 
-    # ── 6. Virtual goal publisher (continuous carrot) ──────────────────
+    # ── 6. Direct GPS heading + LiDAR reactive avoidance ──────────────
     virtual_goal_node = Node(
         package='handheld_mapping',
         executable='virtual_goal_publisher',
         name='virtual_goal_publisher',
         output='screen',
         parameters=[{
-            'lookahead_distance': lookahead,
-            'update_interval': 0.5,
+            'control_hz': 10.0,
             'arrival_radius': 1.0,
             'waypoint_dwell': 5.0,
             'sensor_timeout': 0.75,
-            'min_goal_translation': 0.30,
-            'min_goal_yaw_deg': 8.0,
+            'scan_timeout': 0.60,
+            'cruise_speed': 0.22,
+            'front_stop_distance': 0.42,
+            'front_slow_distance': 0.95,
         }],
     )
 
@@ -272,7 +269,6 @@ def generate_launch_description():
         declare_lidar_port,
         declare_stm32_port,
         declare_stm32_baud,
-        declare_lookahead,
         declare_use_rviz,
         ydlidar_node,
         tf_base_laser,

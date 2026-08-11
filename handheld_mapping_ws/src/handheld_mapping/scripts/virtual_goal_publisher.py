@@ -1,10 +1,11 @@
 #!/usr/bin/python3
-"""Jetson-side GPS+ROS fusion controller.
+"""Direct GPS heading controller with reactive LiDAR obstacle avoidance.
 
-Global GPS route management and heading-to-map conversion live here. Nav2
-still performs local planning and obstacle avoidance. Absolute heading uses
-dual-antenna GNSS first and QMC5883 second; JY901S yaw is intentionally not
-used because it is not a trustworthy absolute heading source on this robot.
+GPS+ROS mode deliberately does not use Nav2 planning. GPS and an absolute
+heading source point the robot toward the active waypoint, while LaserScan
+locally slows or turns the robot around obstacles. Indoor mode continues to
+use Nav2 through its separate /cmd_vel channel. JY901S yaw remains diagnostic
+only and is never used as an absolute heading source.
 """
 
 import json
@@ -12,14 +13,17 @@ import math
 import time
 
 import rclpy
-from geometry_msgs.msg import Quaternion
-from nav2_msgs.action import NavigateToPose
-from rclpy.action import ActionClient
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Int8, String
 
 
 MODE_GPS_ROS = 1
+
+
+def clamp(value, lower, upper):
+    return max(lower, min(upper, value))
 
 
 def normalize_degrees(value):
@@ -43,34 +47,50 @@ def distance_and_bearing(lat1, lon1, lat2, lon2):
 class GpsRosController(Node):
     def __init__(self):
         super().__init__('virtual_goal_publisher')
-        self.declare_parameter('lookahead_distance', 2.0)
-        self.declare_parameter('update_interval', 0.5)
+        self.declare_parameter('control_hz', 10.0)
         self.declare_parameter('arrival_radius', 1.0)
         self.declare_parameter('waypoint_dwell', 5.0)
         self.declare_parameter('sensor_timeout', 0.75)
-        self.declare_parameter('min_goal_translation', 0.30)
-        self.declare_parameter('min_goal_yaw_deg', 8.0)
-        self.declare_parameter('map_frame', 'map')
-        self.declare_parameter('robot_frame', 'base_footprint')
+        self.declare_parameter('scan_timeout', 0.60)
+        self.declare_parameter('cruise_speed', 0.22)
+        self.declare_parameter('minimum_drive_speed', 0.07)
+        self.declare_parameter('heading_kp', 1.15)
+        self.declare_parameter('max_angular_speed', 0.85)
+        self.declare_parameter('turn_in_place_angle_deg', 55.0)
+        self.declare_parameter('front_stop_distance', 0.42)
+        self.declare_parameter('front_slow_distance', 0.95)
+        self.declare_parameter('side_stop_distance', 0.30)
+        self.declare_parameter('obstacle_turn_speed', 0.70)
+        self.declare_parameter('front_half_angle_deg', 28.0)
+        self.declare_parameter('side_sector_angle_deg', 95.0)
 
-        self._lookahead = float(self.get_parameter('lookahead_distance').value)
         self._arrival_radius = float(self.get_parameter('arrival_radius').value)
         self._dwell_seconds = float(self.get_parameter('waypoint_dwell').value)
         self._sensor_timeout = float(self.get_parameter('sensor_timeout').value)
-        self._min_translation = float(self.get_parameter('min_goal_translation').value)
-        self._min_yaw = math.radians(float(self.get_parameter('min_goal_yaw_deg').value))
-        self._map_frame = self.get_parameter('map_frame').value
-        self._robot_frame = self.get_parameter('robot_frame').value
-
-        from tf2_ros import Buffer, TransformListener
-        from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
-        self._tf_errors = (LookupException, ConnectivityException, ExtrapolationException)
+        self._scan_timeout = float(self.get_parameter('scan_timeout').value)
+        self._cruise_speed = float(self.get_parameter('cruise_speed').value)
+        self._minimum_drive_speed = float(
+            self.get_parameter('minimum_drive_speed').value)
+        self._heading_kp = float(self.get_parameter('heading_kp').value)
+        self._max_angular = float(self.get_parameter('max_angular_speed').value)
+        self._turn_in_place_angle = float(
+            self.get_parameter('turn_in_place_angle_deg').value)
+        self._front_stop = float(self.get_parameter('front_stop_distance').value)
+        self._front_slow = max(
+            self._front_stop + 0.05,
+            float(self.get_parameter('front_slow_distance').value))
+        self._side_stop = float(self.get_parameter('side_stop_distance').value)
+        self._obstacle_turn = float(self.get_parameter('obstacle_turn_speed').value)
+        self._front_half_angle = math.radians(float(
+            self.get_parameter('front_half_angle_deg').value))
+        self._side_sector_angle = math.radians(float(
+            self.get_parameter('side_sector_angle_deg').value))
 
         self._mode = 2
         self._sensor = None
         self._sensor_time = 0.0
+        self._scan = None
+        self._scan_time = 0.0
         self._route = {}
         self._route_total = 0
         self._cloud_route = []
@@ -81,30 +101,35 @@ class GpsRosController(Node):
         self._mission_dwell_seconds = self._dwell_seconds
         self._waypoint_index = 0
         self._dwell_until = 0.0
-        self._last_goal = None
-        self._goal_handle = None
-        self._request_pending = False
         self._control_enabled = False
+        self._avoid_direction = 0
+        self._last_state_signature = None
+        self._last_state_publish = 0.0
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(String, '/stm32/sensors', self._on_sensors, 10)
+        self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
         self.create_subscription(
             String, '/gps_ros/mission_command', self._on_mission_command, 10)
+        self._cmd_pub = self.create_publisher(Twist, '/gps_ros/cmd_vel', 10)
         self._state_pub = self.create_publisher(String, '/gps_ros/state', 10)
         self._enable_pub = self.create_publisher(Bool, '/gps_ros/control_enabled', 10)
-        self._action = ActionClient(self, NavigateToPose, '/navigate_to_pose')
-        interval = float(self.get_parameter('update_interval').value)
-        self.create_timer(interval, self._tick)
+
+        control_hz = max(2.0, float(self.get_parameter('control_hz').value))
+        self.create_timer(1.0 / control_hz, self._tick)
         self.get_logger().info(
-            'GPS+ROS controller ready: heading=GNSS then QMC5883; JY901S yaw disabled')
+            'GPS+ROS direct controller ready: no Nav2 planning, '
+            f'control={control_hz:.1f}Hz speed={self._cruise_speed:.2f}m/s '
+            f'obstacle_stop={self._front_stop:.2f}m')
 
     def _on_mode(self, msg):
-        if msg.data == self._mode:
+        new_mode = int(msg.data)
+        if new_mode == self._mode:
             return
-        self._mode = msg.data
-        self._last_goal = None
+        self._mode = new_mode
         self._waypoint_index = 0
         self._dwell_until = 0.0
+        self._avoid_direction = 0
         if self._mode != MODE_GPS_ROS:
             self._cloud_mission_active = False
             self._cloud_mission_configured = False
@@ -122,12 +147,15 @@ class GpsRosController(Node):
             self._route = {}
             self._route_total = total
             self._waypoint_index = 0
-            self._last_goal = None
         if data.get('route_valid') and 0 <= int(data.get('route_slot', -1)) < total:
             slot = int(data['route_slot'])
             self._route[slot] = (
                 float(data.get('route_latitude', 0.0)),
                 float(data.get('route_longitude', 0.0)))
+
+    def _on_scan(self, msg):
+        self._scan = msg
+        self._scan_time = time.monotonic()
 
     def _on_mission_command(self, msg):
         try:
@@ -174,16 +202,10 @@ class GpsRosController(Node):
             dwell_seconds = float(data.get('dwell_seconds', self._dwell_seconds))
         except (TypeError, ValueError):
             dwell_seconds = self._dwell_seconds
-        self._mission_dwell_seconds = max(0.0, min(60.0, dwell_seconds))
+        self._mission_dwell_seconds = clamp(dwell_seconds, 0.0, 60.0)
         self._waypoint_index = 0
         self._dwell_until = 0.0
-        self._last_goal = None
-        if self._goal_handle is not None:
-            try:
-                self._goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-            self._goal_handle = None
+        self._avoid_direction = 0
         self._publish_state('MISSION_ACCEPTED')
 
     def _active_route(self):
@@ -213,21 +235,101 @@ class GpsRosController(Node):
 
     def _heading(self):
         if self._sensor.get('gnss_heading_valid'):
-            return float(self._sensor['gnss_heading']) % 360.0, 'GNSS_DUAL'
+            value = float(self._sensor['gnss_heading'])
+            if math.isfinite(value):
+                return value % 360.0, 'GNSS_DUAL'
         if self._sensor.get('mag_valid'):
-            return float(self._sensor['mag_yaw']) % 360.0, 'QMC5883'
+            value = float(self._sensor['mag_yaw'])
+            if math.isfinite(value):
+                return value % 360.0, 'QMC5883'
         return None, 'NONE'
 
-    def _robot_pose(self):
-        try:
-            transform = self._tf_buffer.lookup_transform(
-                self._map_frame, self._robot_frame, rclpy.time.Time())
-        except self._tf_errors:
-            return None
-        q = transform.transform.rotation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        return transform.transform.translation.x, transform.transform.translation.y, yaw
+    def _sector_clearance(self, start_angle, end_angle):
+        scan = self._scan
+        if scan is None or not scan.ranges or scan.angle_increment == 0.0:
+            return 0.0
+        values = []
+        angle = scan.angle_min
+        for distance in scan.ranges:
+            if start_angle <= angle <= end_angle and math.isfinite(distance):
+                if scan.range_min <= distance <= scan.range_max:
+                    values.append(float(distance))
+            angle += scan.angle_increment
+        if not values:
+            return (scan.range_max if math.isfinite(scan.range_max) and
+                    scan.range_max > 0.0 else 10.0)
+        values.sort()
+        # Ignore at most two isolated bad returns without hiding a real object.
+        return values[min(2, len(values) - 1)]
+
+    def _scan_clearances(self):
+        front = self._sector_clearance(
+            -self._front_half_angle, self._front_half_angle)
+        left = self._sector_clearance(
+            self._front_half_angle * 0.5, self._side_sector_angle)
+        right = self._sector_clearance(
+            -self._side_sector_angle, -self._front_half_angle * 0.5)
+        return front, left, right
+
+    def _choose_avoid_direction(self, left, right, heading_error_cw):
+        if self._avoid_direction != 0 and abs(left - right) < 0.35:
+            return self._avoid_direction
+        if left > right + 0.08:
+            return 1   # ROS angular.z positive turns left.
+        if right > left + 0.08:
+            return -1
+        return -1 if heading_error_cw > 0.0 else 1
+
+    def _compute_command(self, heading_error_cw, front, left, right):
+        heading_error_rad = math.radians(heading_error_cw)
+        heading_angular = clamp(
+            -self._heading_kp * heading_error_rad,
+            -self._max_angular, self._max_angular)
+
+        if abs(heading_error_cw) >= self._turn_in_place_angle:
+            linear = 0.0
+        else:
+            alignment = max(0.25, math.cos(heading_error_rad))
+            linear = self._cruise_speed * alignment
+
+        state = 'NAVIGATING'
+        obstacle_active = False
+        if front <= self._front_stop:
+            self._avoid_direction = self._choose_avoid_direction(
+                left, right, heading_error_cw)
+            linear = 0.0
+            angular = self._avoid_direction * self._obstacle_turn
+            state = 'OBSTACLE_TURN'
+            obstacle_active = True
+        elif front < self._front_slow:
+            self._avoid_direction = self._choose_avoid_direction(
+                left, right, heading_error_cw)
+            ratio = clamp(
+                (front - self._front_stop) /
+                (self._front_slow - self._front_stop), 0.0, 1.0)
+            linear = min(linear, max(self._minimum_drive_speed,
+                                     self._cruise_speed * ratio))
+            avoid_angular = self._avoid_direction * (
+                0.38 + (1.0 - ratio) * (self._obstacle_turn - 0.38))
+            angular = clamp(
+                avoid_angular + 0.20 * heading_angular,
+                -self._max_angular, self._max_angular)
+            state = 'OBSTACLE_AVOIDING'
+            obstacle_active = True
+        else:
+            if front > self._front_slow + 0.15:
+                self._avoid_direction = 0
+            angular = heading_angular
+            if left < self._side_stop:
+                angular = min(angular, -0.40)
+                state = 'LEFT_SIDE_CLEARANCE'
+                obstacle_active = True
+            elif right < self._side_stop:
+                angular = max(angular, 0.40)
+                state = 'RIGHT_SIDE_CLEARANCE'
+                obstacle_active = True
+
+        return linear, angular, state, obstacle_active
 
     def _tick(self):
         if self._mode != MODE_GPS_ROS:
@@ -236,6 +338,9 @@ class GpsRosController(Node):
         now = time.monotonic()
         if self._sensor is None or now - self._sensor_time > self._sensor_timeout:
             self._stop('STM32_TIMEOUT')
+            return
+        if self._scan is None or now - self._scan_time > self._scan_timeout:
+            self._stop('LIDAR_TIMEOUT')
             return
         if not self._sensor.get('gps_valid'):
             self._stop('GPS_INVALID')
@@ -252,16 +357,8 @@ class GpsRosController(Node):
         if not mission_active:
             self._stop('MISSION_INACTIVE')
             return
-        pose = self._robot_pose()
-        if pose is None:
-            self._stop('TF_UNAVAILABLE')
-            return
-        if not self._action.server_is_ready():
-            self._stop('NAV2_UNAVAILABLE')
-            return
-
         if now < self._dwell_until:
-            self._stop('WAYPOINT_DWELL', cancel=False)
+            self._stop('WAYPOINT_DWELL')
             return
 
         current_lat = float(self._sensor['latitude'])
@@ -280,84 +377,70 @@ class GpsRosController(Node):
             dwell = (self._mission_dwell_seconds if self._cloud_mission_active
                      else self._dwell_seconds)
             self._dwell_until = now + dwell
-            self._last_goal = None
+            self._avoid_direction = 0
             self._stop('WAYPOINT_REACHED')
             return
 
-        map_x, map_y, map_yaw = pose
         heading_error_cw = normalize_degrees(bearing - heading)
-        goal_yaw = map_yaw - math.radians(heading_error_cw)
-        carrot_distance = min(self._lookahead, distance)
-        goal_x = map_x + carrot_distance * math.cos(goal_yaw)
-        goal_y = map_y + carrot_distance * math.sin(goal_yaw)
+        front, left, right = self._scan_clearances()
+        linear, angular, state, obstacle_active = self._compute_command(
+            heading_error_cw, front, left, right)
 
-        self._publish_state('NAVIGATING', heading_source, distance, bearing,
-                            heading, heading_error_cw)
+        command = Twist()
+        command.linear.x = float(linear)
+        command.angular.z = float(angular)
+        self._cmd_pub.publish(command)
         self._set_enabled(True)
-        if self._last_goal is not None:
-            shift = math.hypot(goal_x - self._last_goal[0], goal_y - self._last_goal[1])
-            yaw_shift = abs(math.atan2(math.sin(goal_yaw - self._last_goal[2]),
-                                       math.cos(goal_yaw - self._last_goal[2])))
-            if shift < self._min_translation and yaw_shift < self._min_yaw:
-                return
-        if not self._request_pending:
-            self._last_goal = (goal_x, goal_y, goal_yaw)
-            self._send_goal(goal_x, goal_y, goal_yaw)
-
-    def _send_goal(self, x, y, yaw):
-        goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = self._map_frame
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = x
-        goal.pose.pose.position.y = y
-        goal.pose.pose.orientation = Quaternion(
-            z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0))
-        self._request_pending = True
-        future = self._action.send_goal_async(goal)
-        future.add_done_callback(self._on_goal_response)
-
-    def _on_goal_response(self, future):
-        self._request_pending = False
-        try:
-            handle = future.result()
-        except Exception as exc:
-            self.get_logger().warning(f'GPS+ROS goal request failed: {exc}')
-            self._set_enabled(False)
-            return
-        if handle.accepted:
-            self._goal_handle = handle
-        else:
-            self._set_enabled(False)
+        self._publish_state(
+            state, heading_source, distance, bearing, heading, heading_error_cw,
+            front, left, right, linear, angular, obstacle_active)
 
     def _set_enabled(self, enabled):
-        self._control_enabled = bool(enabled)
-        self._enable_pub.publish(Bool(data=self._control_enabled))
+        enabled = bool(enabled)
+        if enabled != self._control_enabled:
+            self._control_enabled = enabled
+            self._enable_pub.publish(Bool(data=enabled))
 
-    def _stop(self, state, cancel=True):
+    def _stop(self, state):
+        self._cmd_pub.publish(Twist())
         self._set_enabled(False)
-        if cancel and self._goal_handle is not None:
-            try:
-                self._goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-            self._goal_handle = None
-        self._request_pending = False
         self._publish_state(state)
 
     def _publish_state(self, state, heading_source='NONE', distance=None,
-                       bearing=None, heading=None, heading_error=None):
+                       bearing=None, heading=None, heading_error=None,
+                       front=None, left=None, right=None, linear=0.0,
+                       angular=0.0, obstacle_active=False):
         payload = {
-            'state': state, 'control_enabled': self._control_enabled,
+            'state': state,
+            'controller': 'GPS_LIDAR_REACTIVE',
+            'path_planning': False,
+            'control_enabled': self._control_enabled,
             'waypoint_index': self._waypoint_index,
             'waypoint_total': (len(self._cloud_route) if self._cloud_mission_configured
                                else self._route_total),
             'mission_source': ('WECHAT_GPS' if self._cloud_mission_configured else 'STM32'),
             'patrol_mode': self._patrol_mode if self._cloud_mission_configured else None,
             'heading_source': heading_source,
-            'distance_to_target': distance, 'target_bearing': bearing,
-            'fused_heading': heading, 'heading_error': heading_error,
+            'distance_to_target': distance,
+            'target_bearing': bearing,
+            'fused_heading': heading,
+            'heading_error': heading_error,
+            'lidar_front': front,
+            'lidar_left': left,
+            'lidar_right': right,
+            'obstacle_active': obstacle_active,
+            'command_linear': linear,
+            'command_angular': angular,
             'timestamp': time.time(),
         }
+        signature_payload = dict(payload)
+        signature_payload.pop('timestamp', None)
+        signature = json.dumps(signature_payload, sort_keys=True, separators=(',', ':'))
+        now = time.monotonic()
+        if signature == self._last_state_signature and now - self._last_state_publish < 0.5:
+            return
+        self._last_state_signature = signature
+        self._last_state_publish = now
         self._state_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
 
 

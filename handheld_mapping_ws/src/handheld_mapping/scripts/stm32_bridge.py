@@ -83,8 +83,10 @@ class Stm32Bridge(Node):
         self._rx_buf = bytearray()
         self._mode = MODE_REMOTE
         self._nav_cmd = Twist()
+        self._gps_ros_cmd = Twist()
         self._remote_cmd = Twist()
         self._nav_time = 0.0
+        self._gps_ros_time = 0.0
         self._remote_time = 0.0
         self._gps_ros_enabled = False
         self._gps_route_packets = deque()
@@ -97,6 +99,7 @@ class Stm32Bridge(Node):
 
         self.create_subscription(Int8, '/robot_mode', self._on_mode, 10)
         self.create_subscription(Twist, '/cmd_vel', self._on_nav_cmd, 10)
+        self.create_subscription(Twist, '/gps_ros/cmd_vel', self._on_gps_ros_cmd, 10)
         self.create_subscription(Twist, '/remote_cmd_vel', self._on_remote_cmd, 10)
         self.create_subscription(
             Bool, '/gps_ros/control_enabled', self._on_gps_ros_enabled, 10)
@@ -128,12 +131,17 @@ class Stm32Bridge(Node):
         if msg.data != self._mode:
             # A mode change must send zero until that mode produces a fresh command.
             self._nav_time = 0.0
+            self._gps_ros_time = 0.0
             self._remote_time = 0.0
         self._mode = msg.data
 
     def _on_nav_cmd(self, msg):
         self._nav_cmd = msg
         self._nav_time = time.monotonic()
+
+    def _on_gps_ros_cmd(self, msg):
+        self._gps_ros_cmd = msg
+        self._gps_ros_time = time.monotonic()
 
     def _on_remote_cmd(self, msg):
         self._remote_cmd = msg
@@ -220,21 +228,27 @@ class Stm32Bridge(Node):
             # Preserve the already verified WeChat/chassis sign convention.
             vx = self._remote_cmd.linear.x
             wz = self._remote_cmd.angular.z
-        elif (self._mode == MODE_INDOOR or
-              (self._mode == MODE_GPS_ROS and self._gps_ros_enabled)) and \
-                now - self._nav_time <= self._nav_timeout:
-            # Nav2 REP-103 -> chassis sign convention.
+        elif self._mode == MODE_INDOOR and now - self._nav_time <= self._nav_timeout:
+            # Indoor Nav2 REP-103 -> chassis sign convention.
             # Forward navigation follows the per-mode limit. Negative Nav2
             # velocity is the short BackUp recovery and must remain strong
             # enough to overcome the chassis dead zone.
             speed_scale = (self._mode_speed[self._mode]
                            if self._nav_cmd.linear.x >= 0.0 else 1.0)
-            if self._mode == MODE_INDOOR and self._nav_cmd.linear.x >= 0.0:
+            if self._nav_cmd.linear.x >= 0.0:
                 speed_scale *= self._indoor_linear_gain
             vx = self._nav_cmd.linear.x * speed_scale * self._nav_linear_sign
-            if self._mode == MODE_INDOOR and abs(vx) > self._indoor_max_linear:
+            if abs(vx) > self._indoor_max_linear:
                 vx = math.copysign(self._indoor_max_linear, vx)
             wz = self._nav_cmd.angular.z * self._nav_angular_sign
+        elif (self._mode == MODE_GPS_ROS and self._gps_ros_enabled and
+              now - self._gps_ros_time <= self._nav_timeout):
+            # GPS+ROS uses a dedicated direct GPS/LiDAR controller. It no
+            # longer consumes Nav2 commands, preventing stale planner output
+            # from taking ownership of fusion mode.
+            speed_scale = self._mode_speed[self._mode]
+            vx = self._gps_ros_cmd.linear.x * speed_scale * self._nav_linear_sign
+            wz = self._gps_ros_cmd.angular.z * self._nav_angular_sign
         wz = self._compensate_angular_deadzone(wz)
         # GPS_ONLY deliberately receives zero velocity; STM32 owns its controller.
         data = struct.pack(TX_FMT, self._mode, vx, wz)
